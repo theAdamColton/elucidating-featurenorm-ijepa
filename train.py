@@ -367,10 +367,20 @@ def main(conf: TrainConfig = TrainConfig()):
                 interp = min(
                     1, training_state["global_step"] / conf.interp_warmup_steps
                 )
+                interp = 0
+
+                should_log = (
+                    training_state["global_step"] % conf.log_every_num_steps
+                ) == 0
 
                 with autocast_fn():
                     result_dict = model(
-                        x_patches, y_patches, x_token_ids, y_token_ids, interp=interp
+                        x_patches,
+                        y_patches,
+                        x_token_ids,
+                        y_token_ids,
+                        interp=interp,
+                        return_smooth_rank=should_log,
                     )
 
                 loss = result_dict["loss"]
@@ -388,10 +398,6 @@ def main(conf: TrainConfig = TrainConfig()):
                 for g in optimizer.param_groups:
                     g["lr"] = lr
 
-                should_log = (
-                    training_state["global_step"] % conf.log_every_num_steps
-                ) == 0
-
                 if should_log:
                     num_samples = 0
                     for ids_seq in x_token_ids.cpu():
@@ -403,7 +409,13 @@ def main(conf: TrainConfig = TrainConfig()):
                         num_samples += len(ids)
 
                     wandb.log(
-                        dict(epoch=epoch, loss=loss, num_samples=num_samples, lr=lr),
+                        dict(
+                            epoch=epoch,
+                            loss=loss,
+                            num_samples=num_samples,
+                            lr=lr,
+                            smooth_rank=result_dict["smooth_rank"],
+                        ),
                         step=training_state["global_step"],
                     )
 

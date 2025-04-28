@@ -13,6 +13,25 @@ from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
 MASK_SEQUENCE_ID = -100
 
 
+def compute_smooth_rank(x, eps=1e-7):
+    """
+    x: Batch of representations, shape: (B Z)
+
+    This is a metric studied in the 2023 paper:
+    RankMe: Assessing the Downstream Performance of Pretrained Self-Supervised Representations by Their Rank
+
+    Higher smooth rank
+    """
+    x = x.float()
+
+    s = torch.linalg.svdvals(x)
+    s_norm = s.norm(1)
+    p = s / s_norm
+    log_p = torch.log(p + eps)
+    entropy = torch.exp(-(p * log_p).sum())
+    return entropy
+
+
 class TimestepEmbedder(nn.Module):
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
@@ -232,6 +251,9 @@ class Predictor(nn.Module):
 
         p_emb = einx.multiply("d, b s -> b s d", self.p_emb, prediction_mask)
 
+        # zero out tokens to predict
+        x = einx.multiply("b s d, b s", x, ~prediction_mask)
+
         x = x + pos_emb + p_emb
 
         temb = self.temb(t)
@@ -288,7 +310,9 @@ class IJEPADepthSmart(nn.Module):
         if config.should_tie_predictor_norm_out:
             self.predictor.norm_out = self.encoder.norm_out
 
-    def forward(self, x, y, x_token_ids, y_token_ids, interp=0):
+    def forward(
+        self, x, y, x_token_ids, y_token_ids, interp=0, return_smooth_rank=False
+    ):
         config = self.config
         device, dtype = x.device, x.dtype
 
@@ -314,6 +338,12 @@ class IJEPADepthSmart(nn.Module):
         target_hidden_states = F.layer_norm(
             target_hidden_states, (target_hidden_states.shape[-1],)
         )
+
+        smooth_rank = None
+        if return_smooth_rank:
+            smooth_rank = compute_smooth_rank(
+                target_hidden_states.view(-1, target_hidden_states.shape[-1])
+            )
 
         x, *_ = self.encoder(x, x_t, x_token_ids)
 
@@ -381,4 +411,4 @@ class IJEPADepthSmart(nn.Module):
         is_padding = token_ids[:, num_ctx_tokens:, 0] == MASK_SEQUENCE_ID
         loss = loss[~is_padding].mean()
 
-        return dict(loss=loss)
+        return dict(loss=loss, smooth_rank=smooth_rank)
