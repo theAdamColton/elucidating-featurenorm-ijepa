@@ -221,11 +221,15 @@ def main(conf: TrainConfig = TrainConfig()):
 
     pad_value_dict = {"position_ids": 0, "patches": 0, "sequence_ids": MASK_SEQUENCE_ID}
 
-    dataset = cabbage_patch.CabbageDataset(
-        conf.train_dataset_pattern, shardshuffle=True
-    )
     dataset = (
-        dataset.shuffle(1000)
+        cabbage_patch.CabbageDataset(
+            conf.train_dataset_pattern,
+            shardshuffle=True,
+            detshuffle=True,
+            seed=conf.seed,
+            nodesplitter=wds.split_by_node,
+        )
+        .shuffle(1000)
         .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
         .rename(pixel_values=conf.image_column_name)
         .map(ContextTargetPatcher(conf.patcher))
@@ -236,8 +240,9 @@ def main(conf: TrainConfig = TrainConfig()):
             conf.packer_batch_size,
             pad_value_dict=pad_value_dict,
         )
+        .shuffle(16)
+        .to_tuple("x_patches", "y_patches")
         .batched(conf.batch_size // conf.packer_batch_size)
-        .shuffle(10)
     )
 
     if conf.mode == "make-viz":
@@ -345,7 +350,7 @@ def main(conf: TrainConfig = TrainConfig()):
 
         for epoch in range(conf.num_epochs):
             for batch in tqdm(train_dataloader, desc=f"training epoch {epoch}"):
-                x_patches_ts, y_patches_ts = batch["x_patches"], batch["y_patches"]
+                x_patches_ts, y_patches_ts, *_ = batch
 
                 x_patches = x_patches_ts.named_columns.pop("patches")
                 x_position_ids = x_patches_ts.named_columns.pop("position_ids")
