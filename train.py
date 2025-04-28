@@ -162,7 +162,7 @@ class TrainConfig:
     should_compile: bool = False
     dtype: str = "bfloat16"
     device: str = "cuda"
-    batch_size: int = 8
+    batch_size: int = 256
     packer_batch_size: int = 8
     num_workers: int = 0
     seed: int = 42
@@ -200,8 +200,8 @@ class TrainConfig:
     mode: Literal["make-viz", "train"] = "train"
 
     def __post_init__(self):
-        assert self.packer_batch_size % self.batch_size == 0
-        assert self.packer_batch_size < self.batch_size
+        assert self.batch_size % self.packer_batch_size == 0
+        assert self.packer_batch_size <= self.batch_size
 
 
 def main(conf: TrainConfig = TrainConfig()):
