@@ -180,8 +180,8 @@ class TrainConfig:
 
     num_image_channels: int = 3
 
-    ema_beta: float = 0.995
-    interp_warmup_steps: int = 5000
+    ema_beta: float = 0.996
+    interp_warmup_steps: int = 100000
 
     # Webdataset tars
     train_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar"
@@ -367,7 +367,6 @@ def main(conf: TrainConfig = TrainConfig()):
                 interp = min(
                     1, training_state["global_step"] / conf.interp_warmup_steps
                 )
-                interp = 0
 
                 should_log = (
                     training_state["global_step"] % conf.log_every_num_steps

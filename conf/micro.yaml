@@ -3,30 +3,13 @@ conf:
   dtype: bfloat16
   device: cuda
   batch_size: 64
-  packer_batch_size: 8
   num_workers: 2
-  seed: 42
   lr: 0.0002
-  num_epochs: 10
-  log_every_num_steps: 50
-  validation_image_size: 256
-  validation_train_epochs: 50
   validation_probe_lr: 5e-4
   validation_probe_batch_size: 1024
-  test_mode: false
-  num_image_channels: 3
-  ema_beta: 0.997
-  interp_warmup_steps: 5000
+  interp_warmup_steps: 100000
   train_dataset_pattern: /nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar
   val_dataset_pattern: /nvme/imagenet1k/imagenet1k-validation-{00..63}.tar
-  image_column_name: jpg
-  label_column_name: cls
-  patcher:
-    patch_size: 16
-    window_size: 2
-    max_side_length: 256
-    min_side_length: 64
-    max_num_context_tokens: 128
   model:
     encoder:
       input_size: 768
@@ -35,40 +18,23 @@ conf:
       block_config:
         mlp_config:
           embed_dim: 64
-          mlp_ratio: 4
-          use_bias: true
           num_experts: 4
           capacity: 1.0
-          should_clip_capacity_to_pow2: false
         attention_config:
           embed_dim: 64
           head_dim: 64
           num_attention_heads: 1
-          should_use_qk_norm: true
-      max_num_height_tokens: 64
-      max_num_width_tokens: 64
     predictor:
       input_size: 64
       num_transformer_blocks: 2
       block_config:
         mlp_config:
           embed_dim: 64
-          mlp_ratio: 4
-          use_bias: true
           num_experts: 4
           capacity: 1.0
-          should_clip_capacity_to_pow2: false
         attention_config:
           embed_dim: 64
           head_dim: 64
           num_attention_heads: 1
-          should_use_qk_norm: true
-      max_num_height_tokens: 64
-      max_num_width_tokens: 64
     predictor_batch_repeat: 4
-    predictor_context_capacity: 0.125
-    predictor_target_capacity: 0.125
-    should_tie_predictor_pos_emb: true
-    should_tie_predictor_temb: true
-    should_tie_predictor_norm_out: true
   mode: train
