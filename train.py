@@ -222,7 +222,7 @@ def main(conf: TrainConfig = TrainConfig()):
     )
     dataset = (
         dataset.shuffle(1000)
-        .decode("torchrgb8")
+        .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
         .rename(pixel_values=conf.image_column_name)
         .map(ContextTargetPatcher(conf.patcher))
         .select(filter_rows)
@@ -427,7 +427,7 @@ def main(conf: TrainConfig = TrainConfig()):
                 def _load_simple_dataloader(pattern):
                     ds = (
                         wds.WebDataset(pattern)
-                        .decode("torchrgb8")
+                        .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
                         .rename(
                             pixel_values=conf.image_column_name,
                             label=conf.label_column_name,
