@@ -10,24 +10,6 @@ from dataclasses import dataclass, field
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
 
 
-class WindowedPatchFlattener(nn.Module):
-    def __init__(self, window_size: int = 4, patch_size: int = 4, dtype=torch.bfloat16):
-        self.window_size = window_size
-        self.patch_size = patch_size
-        self.dtype = dtype
-
-    def forward(self, x: torch.Tensor):
-        assert x.dtype == torch.uint8
-        x = einx.rearrange(
-            "... (np ps)... c -> ... np... (ps... c)", x, ps=self.patch_size
-        )
-        x = einx.rearrange(
-            "... (nw ws)... d -> ... (nw... ws...) d", x, ws=self.window_size
-        )
-        x = (x.to(self.dtype) / 255) * 2 - 1
-        return x
-
-
 class TimestepEmbedder(nn.Module):
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
