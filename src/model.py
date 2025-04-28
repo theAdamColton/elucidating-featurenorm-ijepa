@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
 
 
+MASK_SEQUENCE_ID = -100
+
+
 class TimestepEmbedder(nn.Module):
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
@@ -53,7 +56,7 @@ class AdaLayerNormShiftScale(nn.Module):
 
     def forward(self, x, emb):
         emb = self.linear(self.silu(emb))
-        scale, shift = torch.chunk(emb, 2, dim=1)
+        scale, shift = torch.chunk(emb, 2, dim=-1)
         x = self.norm(x) * (1 + scale)
         x = x + shift
         return x
@@ -63,16 +66,16 @@ class AdaLayerNormShiftScale(nn.Module):
 class EncoderConfig:
     input_size: int = 768
 
-    output_size: int = 256
+    output_size: int = 64
 
     sliding_window_size: int = 5
-    num_transformer_blocks: int = 2
+    num_transformer_blocks: int = 10
     block_config: TransformerBlockConfig = field(
         default_factory=lambda: TransformerBlockConfig()
     )
 
-    max_num_height_tokens: int = 16
-    max_num_width_tokens: int = 16
+    max_num_height_tokens: int = 32
+    max_num_width_tokens: int = 32
 
 
 class Encoder(nn.Module):
@@ -100,7 +103,6 @@ class Encoder(nn.Module):
         )
 
         self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
-        self.proj_out = nn.Linear(self.hidden_size, config.output_size)
 
     def forward(self, x, t, token_ids, return_target_hidden_states=False):
         config = self.config
@@ -115,7 +117,7 @@ class Encoder(nn.Module):
 
         x = self.proj_in(x)
 
-        sample_ids, position_ids = token_ids[:, 0], token_ids[:, 1:]
+        sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
 
         hemb = self.h_emb[position_ids[..., 0]]
         wemb = self.w_emb[position_ids[..., 1]]
@@ -127,11 +129,12 @@ class Encoder(nn.Module):
 
         def mask_mod(b, h, q_idx, kv_idx):
             is_same_sample = sample_ids[b, q_idx] == sample_ids[b, kv_idx]
-            q_pos = position_ids[q_idx]
-            kv_pos = position_ids[kv_idx]
+            is_padding = sample_ids[b, q_idx] == MASK_SEQUENCE_ID
+            q_pos = position_ids[b, q_idx]
+            kv_pos = position_ids[b, kv_idx]
             cheby_dist = (q_pos - kv_pos).abs().amax(-1)
             is_in_reach = cheby_dist <= sliding_window_reach
-            return is_same_sample & is_in_reach
+            return is_same_sample & is_in_reach & ~is_padding
 
         block_mask = create_block_mask(
             mask_mod, B=b, H=None, Q_LEN=s, KV_LEN=s, device=device, BLOCK_SIZE=64
@@ -140,22 +143,22 @@ class Encoder(nn.Module):
         temb = self.temb(t)
 
         if return_target_hidden_states:
-            target_hidden_states = torch.empty(
+            target_hidden_states = torch.zeros(
                 b, s, config.output_size, device=device, dtype=dtype
             )
 
             mask = t == 0
-            target_hidden_states[mask] = x
+            # basically masked fill
+            target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
         for i, block in enumerate(self.blocks):
             x = block(x, temb, block_mask=block_mask)
 
             if return_target_hidden_states:
                 mask = t == (i + 1)
-                target_hidden_states[mask] = x
+                target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
         x = self.norm_out(x, temb)
-        x = self.proj_out(x)
 
         if return_target_hidden_states:
             target_hidden_states = self.norm_out(target_hidden_states, temb)
@@ -167,15 +170,15 @@ class Encoder(nn.Module):
 
 @dataclass
 class PredictorConfig:
-    input_size: int = 256
+    input_size: int = 64
 
     num_transformer_blocks: int = 2
     block_config: TransformerBlockConfig = field(
         default_factory=lambda: TransformerBlockConfig()
     )
 
-    max_num_height_tokens: int = 16
-    max_num_width_tokens: int = 16
+    max_num_height_tokens: int = 32
+    max_num_width_tokens: int = 32
 
 
 class Predictor(nn.Module):
@@ -221,7 +224,7 @@ class Predictor(nn.Module):
 
         x = self.proj_in(x)
 
-        sample_ids, position_ids = token_ids[:, 0], token_ids[:, 1:]
+        sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
 
         hemb = self.h_emb[position_ids[..., 0]]
         wemb = self.w_emb[position_ids[..., 1]]
@@ -271,6 +274,7 @@ class IJEPADepthSmart(nn.Module):
         self.encoder = Encoder(config.encoder)
         self.ema_encoder = Encoder(config.encoder)
         self.ema_encoder.load_state_dict(self.encoder.state_dict())
+        self.ema_encoder.requires_grad_(False)
 
         self.predictor = Predictor(config.predictor)
 
@@ -307,37 +311,74 @@ class IJEPADepthSmart(nn.Module):
                 ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
             )
 
-        target_hidden_states = F.layer_norm(target_hidden_states, (d,))
+        target_hidden_states = F.layer_norm(
+            target_hidden_states, (target_hidden_states.shape[-1],)
+        )
 
         x, *_ = self.encoder(x, x_t, x_token_ids)
 
         target_hidden_states = einx.rearrange(
-            "b ys d -> (r b) ys d", r=config.predictor_batch_repeat
+            "b ys d -> (r b) ys d",
+            target_hidden_states,
+            r=config.predictor_batch_repeat,
         )
         x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
+        y_token_ids = einx.rearrange(
+            "b ys nd -> (r b) ys nd", y_token_ids, r=config.predictor_batch_repeat
+        )
+        x_token_ids = einx.rearrange(
+            "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
+        )
 
         num_ctx_tokens = int(round(xs * config.predictor_context_capacity))
-        ctx_ids = torch.rand(
-            config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
-        ).topk(num_ctx_tokens, dim=-1, sorted=False)
+        ctx_ids = (
+            torch.rand(
+                config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
+            )
+            .topk(num_ctx_tokens, dim=-1, sorted=False)
+            .indices
+        )
 
         num_target_tokens = int(round(ys * config.predictor_target_capacity))
-        target_ids = torch.rand(
-            config.predictor_batch_repeat * b, ys, device=device, dtype=dtype
-        ).topk(num_target_tokens, dim=-1, sorted=False)
+        target_ids = (
+            torch.rand(
+                config.predictor_batch_repeat * b, ys, device=device, dtype=dtype
+            )
+            .topk(num_target_tokens, dim=-1, sorted=False)
+            .indices
+        )
 
         ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, ctx_ids)
         targets = einx.get_at(
             "rb [ys] d, rb m -> rb m d", target_hidden_states, target_ids
         )
 
+        ctx_token_ids = einx.get_at("rb [xs] nd, rb k -> rb k nd", x_token_ids, ctx_ids)
+        target_token_ids = einx.get_at(
+            "rb [ys] nd, rb m -> rb m nd", y_token_ids, target_ids
+        )
+
         x = torch.cat((ctx, targets), 1)
-        prediction_mask = torch.zeros(b, x.shape[1], dtype=torch.bool, device=device)
+        token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
+
+        prediction_mask = torch.zeros(
+            config.predictor_batch_repeat * b,
+            x.shape[1],
+            dtype=torch.bool,
+            device=device,
+        )
         prediction_mask[:, num_ctx_tokens:] = 1
 
-        x = self.predictor(x, t, x_token_ids, prediction_mask=prediction_mask)
+        t = einx.rearrange(
+            "b -> (r b) ps", t, r=config.predictor_batch_repeat, ps=x.shape[1]
+        )
+
+        x = self.predictor(x, t, token_ids, prediction_mask=prediction_mask)
         predictions = x[:, num_ctx_tokens:]
 
-        loss = F.smooth_l1_loss(predictions, targets)
+        loss = F.smooth_l1_loss(predictions, targets, reduction="none")
+
+        is_padding = token_ids[:, num_ctx_tokens:, 0] == MASK_SEQUENCE_ID
+        loss = loss[~is_padding].mean()
 
         return loss

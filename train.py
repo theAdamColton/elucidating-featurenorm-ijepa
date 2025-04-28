@@ -4,17 +4,16 @@ from pathlib import Path
 import numpy as np
 import einx
 import jsonargparse
+from torch.utils.data import DataLoader
 import torchvision
 import random
 import torch
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import wandb
 import cabbage_patch
 import tensorset
 
-from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
-
-MASK_SEQUENCE_ID = -100
+from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
 
 
 @dataclass
@@ -72,12 +71,6 @@ class ContextTargetPatcher:
             image_crop_size = tuple(size + multiple_of for size in image_crop_size)
             num_windows = sum(size // multiple_of for size in image_crop_size)
 
-        print(
-            (input_h, input_w),
-            input_h / input_w,
-            image_crop_size,
-            image_crop_size[0] / image_crop_size[1],
-        )
         x = torchvision.transforms.Resize(image_crop_size)(x)
 
         x = einx.rearrange("c (np ps)... -> np... (ps... c)", x, ps=config.patch_size)
@@ -129,6 +122,10 @@ class ContextTargetPatcher:
         return row
 
 
+def filter_rows(row):
+    return row["x_patches"] is not None and row["y_patches"] is not None
+
+
 @dataclass
 class TrainConfig:
     should_compile: bool = False
@@ -138,8 +135,13 @@ class TrainConfig:
     packer_batch_size: int = 8
     num_workers: int = 0
     seed: int = 42
+    lr: float = 5e-4
+    num_epochs: int = 10
 
     num_image_channels: int = 3
+
+    ema_beta: float = 0.995
+    interp_warmup_steps: int = 5000
 
     # Webdataset tars
     dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar"
@@ -153,13 +155,16 @@ class TrainConfig:
         default_factory=lambda: IJEPADepthSmartConfig()
     )
 
-    mode: Literal["make-viz", "train"] = "make-viz"
+    mode: Literal["make-viz", "train"] = "train"
 
 
 def main(conf: TrainConfig = TrainConfig()):
     random.seed(conf.seed)
     torch.manual_seed(conf.seed)
     np.random.seed(conf.seed)
+
+    device = torch.device(conf.device)
+    dtype = getattr(torch, conf.dtype)
 
     input_size = conf.model.encoder.input_size
     num_image_channels = conf.num_image_channels
@@ -170,12 +175,13 @@ def main(conf: TrainConfig = TrainConfig()):
 
     pad_value_dict = {"position_ids": 0, "patches": 0, "sequence_ids": MASK_SEQUENCE_ID}
 
-    dataset = cabbage_patch.CabbageDataset(conf.dataset_pattern)
+    dataset = cabbage_patch.CabbageDataset(conf.dataset_pattern, shardshuffle=True)
     dataset = (
         dataset.decode("torchrgb8")
         .shuffle(1000)
         .rename(pixel_values=conf.image_column_name)
         .map(ContextTargetPatcher(conf.patcher))
+        .select(filter_rows)
         .packed_x_y(
             conf.patcher.max_num_context_tokens,
             max_sequence_length,
@@ -188,6 +194,7 @@ def main(conf: TrainConfig = TrainConfig()):
     sample = next(iter(dataset))
 
     if conf.mode == "make-viz":
+        # Decode and save one batch of images
         viz_output_path = (
             Path(".") / "viz-outputs" / datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
@@ -254,6 +261,73 @@ def main(conf: TrainConfig = TrainConfig()):
                 torchvision.io.write_png(image, str(image_save_path))
 
                 print("saved to ", image_save_path)
+
+    elif conf.mode == "train":
+
+        train_dataloader = DataLoader(
+            dataset, num_workers=conf.num_workers, batch_size=None
+        )
+        model = IJEPADepthSmart(conf.model).to(device)
+        trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
+
+        optimizer = torch.optim.AdamW(
+            trainable_params, lr=conf.lr, betas=(0.9, 0.95), weight_decay=0.05
+        )
+
+        conf_d = asdict(conf)
+        conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
+
+        if conf.should_compile:
+            model = torch.compile(model)
+
+        training_state = dict(global_step=0)
+
+        for epoch in range(conf.num_epochs):
+
+            for batch in train_dataloader:
+                x_patches_ts, y_patches_ts = batch["x_patches"], batch["y_patches"]
+
+                x_patches = x_patches_ts.named_columns.pop("patches")
+                x_position_ids = x_patches_ts.named_columns.pop("position_ids")
+                x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
+                x_token_ids = torch.cat(
+                    (x_sequence_ids.unsqueeze(-1), x_position_ids), -1
+                )
+
+                y_patches = y_patches_ts.named_columns.pop("patches")
+                y_position_ids = y_patches_ts.named_columns.pop("position_ids")
+                y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
+                y_token_ids = torch.cat(
+                    (y_sequence_ids.unsqueeze(-1), y_position_ids), -1
+                )
+
+                x_patches = x_patches.to(device=device, dtype=dtype)
+                x_patches = (x_patches / 255) * 2 - 1
+                y_patches = y_patches.to(device=device, dtype=dtype)
+                y_patches = (y_patches / 255) * 2 - 1
+
+                x_token_ids = x_token_ids.to(device)
+                y_token_ids = y_token_ids.to(device)
+
+                interp = min(
+                    1, training_state["global_step"] / conf.interp_warmup_steps
+                )
+
+                with torch.autocast(device.type, dtype):
+                    loss = model(
+                        x_patches, y_patches, x_token_ids, y_token_ids, interp=interp
+                    )
+
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+                for ema_p, p in zip(
+                    model.ema_encoder.parameters(), model.encoder.parameters()
+                ):
+                    ema_p.lerp_(p, 1 - conf.ema_beta)
+
+                print(loss.item())
 
 
 if __name__ == "__main__":
