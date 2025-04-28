@@ -1,4 +1,6 @@
 from typing import Literal
+from contextlib import contextmanager
+import torch.nn.functional as F
 from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
@@ -25,9 +27,9 @@ class SimplePatcher:
         self.size = size
         self.patch_size = patch_size
 
-    def forward(self, row):
+    def __call__(self, row):
         x = row.pop("pixel_values")
-        c, h, w = x.shape
+        x = self.resize(x)
         x = einx.rearrange("c (np ps)... -> (np...) (ps... c)", x, ps=self.patch_size)
         position_ids = torch.meshgrid(
             (
@@ -38,7 +40,7 @@ class SimplePatcher:
         )
         position_ids = torch.stack(position_ids, -1)
         position_ids = einx.rearrange("np... nd -> (np...) nd", position_ids)
-        sequence_ids = torch.full(x.shape[0], 0)
+        sequence_ids = torch.full((x.shape[0],), 0)
         token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
         row["patches"] = x
         row["token_ids"] = token_ids
@@ -166,10 +168,14 @@ class TrainConfig:
     seed: int = 42
     lr: float = 5e-4
     num_epochs: int = 10
-    validation_image_size: int = 256
 
-    override_max_num_train_steps: int | None = None
-    override_max_num_val_batches: int | None = None
+    log_every_num_steps: int = 50
+
+    validation_image_size: int = 256
+    validation_train_epochs: int = 50
+    validation_probe_batch_size: int = 2048
+
+    test_mode: bool = False
 
     num_image_channels: int = 3
 
@@ -314,13 +320,24 @@ def main(conf: TrainConfig = TrainConfig()):
         conf_d = asdict(conf)
         conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
 
+        wandb.init(
+            project="ijepa-depthsmart",
+            config=conf_d,
+            mode="disabled" if conf.test_mode else None,
+        )
+
         if conf.should_compile:
             model = torch.compile(model)
+            model.encoder = torch.compile(model.encoder)
+
+        @contextmanager
+        def autocast_fn():
+            with torch.autocast(device.type, dtype):
+                yield
 
         training_state = dict(global_step=0)
 
         for epoch in range(conf.num_epochs):
-
             for batch in train_dataloader:
                 x_patches_ts, y_patches_ts = batch["x_patches"], batch["y_patches"]
 
@@ -350,10 +367,12 @@ def main(conf: TrainConfig = TrainConfig()):
                     1, training_state["global_step"] / conf.interp_warmup_steps
                 )
 
-                with torch.autocast(device.type, dtype):
-                    loss = model(
+                with autocast_fn():
+                    result_dict = model(
                         x_patches, y_patches, x_token_ids, y_token_ids, interp=interp
                     )
+
+                loss = result_dict["loss"]
 
                 loss.backward()
                 optimizer.step()
@@ -364,55 +383,152 @@ def main(conf: TrainConfig = TrainConfig()):
                 ):
                     ema_p.lerp_(p, 1 - conf.ema_beta)
 
-                print(loss.item())
+                lr = conf.lr
+                for g in optimizer.param_groups:
+                    g["lr"] = lr
+
+                should_log = (
+                    training_state["global_step"] % conf.log_every_num_steps
+                ) == 0
+
+                if should_log:
+                    num_samples = 0
+                    for ids_seq in x_token_ids.cpu():
+                        ids = torch.unique(ids_seq).tolist()
+                        try:
+                            ids.remove(MASK_SEQUENCE_ID)
+                        except:
+                            pass
+                        num_samples += len(ids)
+
+                    wandb.log(
+                        dict(epoch=epoch, loss=loss, num_samples=num_samples, lr=lr),
+                        step=training_state["global_step"],
+                    )
+
+                training_state["global_step"] += 1
+
+                if conf.test_mode:
+                    break
 
             def validate():
-                val_dataset = (
-                    wds.WebDataset(conf.val_dataset_pattern)
-                    .decode("torchrgb8")
-                    .rename(
-                        pixel_values=conf.image_column_name,
-                        label=conf.label_column_name,
+                def _load_simple_dataloader(pattern):
+                    ds = (
+                        wds.WebDataset(pattern)
+                        .decode("torchrgb8")
+                        .rename(
+                            pixel_values=conf.image_column_name,
+                            label=conf.label_column_name,
+                        )
+                        .map(SimplePatcher(conf.validation_image_size, patch_size))
+                        .batched(conf.batch_size)
                     )
-                    .map(SimplePatcher(conf.validation_image_size, patch_size))
-                    .batched(conf.batch_size)
+                    dl = DataLoader(ds, batch_size=None, num_workers=conf.num_workers)
+                    return dl
+
+                val_train_dataloader = _load_simple_dataloader(
+                    conf.train_dataset_pattern
                 )
-                val_dataloader = DataLoader(
-                    val_dataset, batch_size=None, num_workers=conf.num_workers
+                val_test_dataloader = _load_simple_dataloader(conf.val_dataset_pattern)
+
+                def _embed_dataset(dl):
+                    embeddings = []
+                    labels = []
+                    for batch in tqdm(dl, desc="embedding val dataset"):
+                        patches = batch["patches"]
+                        label = batch["label"]
+                        token_ids = batch["token_ids"]
+
+                        b, s, d = patches.shape
+
+                        patches = patches.to(device=device, dtype=dtype)
+                        patches = (patches / 255) * 2 - 1
+
+                        token_ids = token_ids.to(device)
+
+                        # Full depth
+                        t = torch.full(
+                            (b, s),
+                            conf.model.encoder.num_transformer_blocks + 1,
+                            device=device,
+                        )
+
+                        with autocast_fn():
+                            with torch.inference_mode():
+                                emb, *_ = model.encoder(patches, t, token_ids)
+
+                        emb = emb.mean(1).cpu().float()
+
+                        embeddings.append(emb)
+                        labels.append(label)
+
+                        if conf.test_mode:
+                            break
+
+                    embeddings = torch.cat(embeddings, 0)
+                    labels = torch.cat(labels, 0)
+
+                    return embeddings, labels
+
+                train_embeddings, train_labels = _embed_dataset(val_train_dataloader)
+                test_embeddings, test_labels = _embed_dataset(val_test_dataloader)
+
+                num_classes = int(train_labels.max()) + 1
+                classifier = nn.Linear(train_embeddings.shape[-1], num_classes).to(
+                    device
                 )
+                c_optim = torch.optim.AdamW(classifier.parameters(), lr=1e-3)
 
-                labels = []
-                embeddings = []
+                for val_epoch in tqdm(
+                    range(conf.validation_train_epochs), desc="training val classifier"
+                ):
+                    rand_indices = torch.randperm(train_embeddings.shape[0])
+                    train_embeddings = train_embeddings[rand_indices]
+                    train_labels = train_labels[rand_indices]
 
-                for batch in tqdm(val_dataloader, desc="embedding val dataset"):
-                    patches = batch["patches"]
-                    label = batch["label"]
-                    token_ids = batch["token_ids"]
+                    for emb, lab in zip(
+                        train_embeddings.split(conf.validation_probe_batch_size),
+                        train_labels.split(conf.validation_probe_batch_size),
+                    ):
 
-                    b, s, d = patches.shape
+                        emb = emb.to(device)
+                        lab = lab.to(device)
+                        logits = classifier(emb)
+                        loss = F.cross_entropy(
+                            logits.view(-1, logits.shape[-1]), lab.view(-1)
+                        )
+                        loss.backward()
+                        c_optim.step()
+                        c_optim.zero_grad()
 
-                    patches = patches.to(device=device, dtype=dtype)
-                    patches = (patches / 255) * 2 - 1
+                        if conf.test_mode:
+                            break
 
-                    token_ids = token_ids.to(device)
+                    if conf.test_mode:
+                        break
 
-                    t = torch.full(
-                        (b, s),
-                        conf.model.encoder.num_transformer_blocks + 1,
-                        device=device,
-                    )
+                preds = []
+                for emb in tqdm(
+                    test_embeddings.split(conf.validation_probe_batch_size),
+                    desc="testing probe",
+                ):
+                    emb = emb.to(device)
+                    with torch.inference_mode():
+                        logits = classifier(emb)
+                    pred = logits.argmax(-1)
+                    preds.append(pred.cpu())
+                preds = torch.cat(preds, 0)
+                accuracy = (preds == test_labels).float().mean()
 
-                    with torch.autocast(device.type, dtype):
-                        with torch.inference_mode():
-                            emb = model.encoder(patches, t, token_ids)
+                return accuracy
 
-                    embeddings.append(emb.cpu())
-                    labels.append(label)
+            accuracy = validate()
+            wandb.log({"acc@1": accuracy}, step=training_state["global_step"])
 
-                embeddings = torch.cat(embeddings, 0)
-                labels = torch.cat(labels, 0)
+            print("EPOCH", epoch, "accuracy", accuracy)
 
-                classifier = nn.Linear()
+            if conf.test_mode:
+                break
 
 
 if __name__ == "__main__":

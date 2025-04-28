@@ -381,4 +381,4 @@ class IJEPADepthSmart(nn.Module):
         is_padding = token_ids[:, num_ctx_tokens:, 0] == MASK_SEQUENCE_ID
         loss = loss[~is_padding].mean()
 
-        return loss
+        return dict(loss=loss)
