@@ -414,6 +414,7 @@ def main(conf: TrainConfig = TrainConfig()):
                             num_samples=num_samples,
                             lr=lr,
                             smooth_rank=result_dict["smooth_rank"],
+                            interp=interp,
                         ),
                         step=training_state["global_step"],
                     )
