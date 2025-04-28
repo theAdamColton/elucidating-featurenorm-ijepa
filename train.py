@@ -1,7 +1,9 @@
 from typing import Literal
+from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+from torch import nn
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
@@ -12,8 +14,35 @@ from dataclasses import dataclass, field, asdict
 import wandb
 import cabbage_patch
 import tensorset
+import webdataset as wds
 
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
+
+
+class SimplePatcher:
+    def __init__(self, size=256, patch_size=16):
+        self.resize = torchvision.transforms.Resize((size, size))
+        self.size = size
+        self.patch_size = patch_size
+
+    def forward(self, row):
+        x = row.pop("pixel_values")
+        c, h, w = x.shape
+        x = einx.rearrange("c (np ps)... -> (np...) (ps... c)", x, ps=self.patch_size)
+        position_ids = torch.meshgrid(
+            (
+                torch.arange(self.size // self.patch_size),
+                torch.arange(self.size // self.patch_size),
+            ),
+            indexing="ij",
+        )
+        position_ids = torch.stack(position_ids, -1)
+        position_ids = einx.rearrange("np... nd -> (np...) nd", position_ids)
+        sequence_ids = torch.full(x.shape[0], 0)
+        token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
+        row["patches"] = x
+        row["token_ids"] = token_ids
+        return row
 
 
 @dataclass
@@ -137,6 +166,10 @@ class TrainConfig:
     seed: int = 42
     lr: float = 5e-4
     num_epochs: int = 10
+    validation_image_size: int = 256
+
+    override_max_num_train_steps: int | None = None
+    override_max_num_val_batches: int | None = None
 
     num_image_channels: int = 3
 
@@ -144,8 +177,10 @@ class TrainConfig:
     interp_warmup_steps: int = 5000
 
     # Webdataset tars
-    dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar"
+    train_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar"
+    val_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-validation-{00..63}.tar"
     image_column_name: str = "jpg"
+    label_column_name: str = "cls"
 
     patcher: ContextTargetPatcherConfig = field(
         default_factory=lambda: ContextTargetPatcherConfig()
@@ -175,7 +210,9 @@ def main(conf: TrainConfig = TrainConfig()):
 
     pad_value_dict = {"position_ids": 0, "patches": 0, "sequence_ids": MASK_SEQUENCE_ID}
 
-    dataset = cabbage_patch.CabbageDataset(conf.dataset_pattern, shardshuffle=True)
+    dataset = cabbage_patch.CabbageDataset(
+        conf.train_dataset_pattern, shardshuffle=True
+    )
     dataset = (
         dataset.decode("torchrgb8")
         .shuffle(1000)
@@ -191,9 +228,9 @@ def main(conf: TrainConfig = TrainConfig()):
         .shuffle(10)
     )
 
-    sample = next(iter(dataset))
-
     if conf.mode == "make-viz":
+        sample = next(iter(dataset))
+
         # Decode and save one batch of images
         viz_output_path = (
             Path(".") / "viz-outputs" / datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -328,6 +365,54 @@ def main(conf: TrainConfig = TrainConfig()):
                     ema_p.lerp_(p, 1 - conf.ema_beta)
 
                 print(loss.item())
+
+            def validate():
+                val_dataset = (
+                    wds.WebDataset(conf.val_dataset_pattern)
+                    .decode("torchrgb8")
+                    .rename(
+                        pixel_values=conf.image_column_name,
+                        label=conf.label_column_name,
+                    )
+                    .map(SimplePatcher(conf.validation_image_size, patch_size))
+                    .batched(conf.batch_size)
+                )
+                val_dataloader = DataLoader(
+                    val_dataset, batch_size=None, num_workers=conf.num_workers
+                )
+
+                labels = []
+                embeddings = []
+
+                for batch in tqdm(val_dataloader, desc="embedding val dataset"):
+                    patches = batch["patches"]
+                    label = batch["label"]
+                    token_ids = batch["token_ids"]
+
+                    b, s, d = patches.shape
+
+                    patches = patches.to(device=device, dtype=dtype)
+                    patches = (patches / 255) * 2 - 1
+
+                    token_ids = token_ids.to(device)
+
+                    t = torch.full(
+                        (b, s),
+                        conf.model.encoder.num_transformer_blocks + 1,
+                        device=device,
+                    )
+
+                    with torch.autocast(device.type, dtype):
+                        with torch.inference_mode():
+                            emb = model.encoder(patches, t, token_ids)
+
+                    embeddings.append(emb.cpu())
+                    labels.append(label)
+
+                embeddings = torch.cat(embeddings, 0)
+                labels = torch.cat(labels, 0)
+
+                classifier = nn.Linear()
 
 
 if __name__ == "__main__":
