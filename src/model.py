@@ -1,4 +1,5 @@
 import math
+from typing import Literal
 import torch
 from torch.nn.attention.flex_attention import create_block_mask
 from torch import nn
@@ -279,6 +280,10 @@ class IJEPADepthSmartConfig:
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig())
     predictor: PredictorConfig = field(default_factory=lambda: PredictorConfig())
 
+    depthsmart_mode: Literal["random", "disabled"] = "random"
+
+    target_norm_mode: Literal["layernorm", "disabled"] = "layernorm"
+
     predictor_batch_repeat: int = 8
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
@@ -319,9 +324,16 @@ class IJEPADepthSmart(nn.Module):
         b, xs, d = x.shape
         b, ys, d = y.shape
 
-        t = torch.randint(
-            0, config.encoder.num_transformer_blocks + 1, (b,), device=device
-        )
+        if config.depthsmart_mode == "random":
+            t = torch.randint(
+                0, config.encoder.num_transformer_blocks + 1, (b,), device=device
+            )
+        elif config.depthsmart_mode == "disabled":
+            t = torch.full(
+                (b,), config.encoder.num_transformer_blocks + 1, device=device
+            )
+        else:
+            raise ValueError(config.depthsmart_mode)
 
         x_t = einx.rearrange("b -> b xs", t, xs=xs)
         y_t = einx.rearrange("b -> b ys", t, ys=ys)
@@ -335,9 +347,14 @@ class IJEPADepthSmart(nn.Module):
                 ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
             )
 
-        target_hidden_states = F.layer_norm(
-            target_hidden_states, (target_hidden_states.shape[-1],)
-        )
+        if config.target_norm_mode == "layernorm":
+            target_hidden_states = F.layer_norm(
+                target_hidden_states, (target_hidden_states.shape[-1],)
+            )
+        elif config.target_norm_mode == "disabled":
+            pass
+        else:
+            raise ValueError(config.target_norm_mode)
 
         smooth_rank = None
         if return_smooth_rank:
