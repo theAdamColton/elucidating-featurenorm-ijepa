@@ -1,4 +1,5 @@
 viz-outputs/
+wandb/
 
 # Python-generated files
 __pycache__/

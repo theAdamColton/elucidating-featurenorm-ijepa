@@ -66,16 +66,14 @@ class AdaLayerNormShiftScale(nn.Module):
 class EncoderConfig:
     input_size: int = 768
 
-    output_size: int = 64
-
     sliding_window_size: int = 5
     num_transformer_blocks: int = 10
     block_config: TransformerBlockConfig = field(
         default_factory=lambda: TransformerBlockConfig()
     )
 
-    max_num_height_tokens: int = 32
-    max_num_width_tokens: int = 32
+    max_num_height_tokens: int = 64
+    max_num_width_tokens: int = 64
 
 
 class Encoder(nn.Module):
@@ -136,15 +134,17 @@ class Encoder(nn.Module):
             is_in_reach = cheby_dist <= sliding_window_reach
             return is_same_sample & is_in_reach & ~is_padding
 
+        # TODO
+        # I have to hardcode block_size to 128 to get flex_attention to work
         block_mask = create_block_mask(
-            mask_mod, B=b, H=None, Q_LEN=s, KV_LEN=s, device=device, BLOCK_SIZE=64
+            mask_mod, B=b, H=None, Q_LEN=s, KV_LEN=s, device=device, BLOCK_SIZE=128
         )
 
         temb = self.temb(t)
 
         if return_target_hidden_states:
             target_hidden_states = torch.zeros(
-                b, s, config.output_size, device=device, dtype=dtype
+                b, s, self.hidden_size, device=device, dtype=dtype
             )
 
             mask = t == 0
@@ -177,8 +177,8 @@ class PredictorConfig:
         default_factory=lambda: TransformerBlockConfig()
     )
 
-    max_num_height_tokens: int = 32
-    max_num_width_tokens: int = 32
+    max_num_height_tokens: int = 64
+    max_num_width_tokens: int = 64
 
 
 class Predictor(nn.Module):

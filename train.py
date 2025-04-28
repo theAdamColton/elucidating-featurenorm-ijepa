@@ -171,6 +171,7 @@ class TrainConfig:
 
     log_every_num_steps: int = 50
 
+    validation_probe_lr: float = 1e-3
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_probe_batch_size: int = 2048
@@ -220,8 +221,8 @@ def main(conf: TrainConfig = TrainConfig()):
         conf.train_dataset_pattern, shardshuffle=True
     )
     dataset = (
-        dataset.decode("torchrgb8")
-        .shuffle(1000)
+        dataset.shuffle(1000)
+        .decode("torchrgb8")
         .rename(pixel_values=conf.image_column_name)
         .map(ContextTargetPatcher(conf.patcher))
         .select(filter_rows)
@@ -338,7 +339,7 @@ def main(conf: TrainConfig = TrainConfig()):
         training_state = dict(global_step=0)
 
         for epoch in range(conf.num_epochs):
-            for batch in train_dataloader:
+            for batch in tqdm(train_dataloader, desc=f"training epoch {epoch}"):
                 x_patches_ts, y_patches_ts = batch["x_patches"], batch["y_patches"]
 
                 x_patches = x_patches_ts.named_columns.pop("patches")
@@ -477,7 +478,9 @@ def main(conf: TrainConfig = TrainConfig()):
                 classifier = nn.Linear(train_embeddings.shape[-1], num_classes).to(
                     device
                 )
-                c_optim = torch.optim.AdamW(classifier.parameters(), lr=1e-3)
+                c_optim = torch.optim.AdamW(
+                    classifier.parameters(), lr=conf.validation_probe_lr
+                )
 
                 for val_epoch in tqdm(
                     range(conf.validation_train_epochs), desc="training val classifier"
