@@ -54,8 +54,8 @@ class AdaLayerNormShiftScale(nn.Module):
     def forward(self, x, emb):
         emb = self.linear(self.silu(emb))
         scale, shift = torch.chunk(emb, 2, dim=1)
-        x = self.norm(x) * ( 1 + scale)
-        x = x+ shift
+        x = self.norm(x) * (1 + scale)
+        x = x + shift
         return x
 
 
@@ -284,7 +284,7 @@ class IJEPADepthSmart(nn.Module):
         if config.should_tie_predictor_norm_out:
             self.predictor.norm_out = self.encoder.norm_out
 
-    def forward(self, x, y, x_token_ids, y_token_ids, interp = 0):
+    def forward(self, x, y, x_token_ids, y_token_ids, interp=0):
         config = self.config
         device, dtype = x.device, x.dtype
 
@@ -303,31 +303,35 @@ class IJEPADepthSmart(nn.Module):
                 y, y_t, y_token_ids, return_target_hidden_states=True
             )
 
-            target_hidden_states = ema_encoder_outputs * interp + target_hidden_states * (1-interp)
+            target_hidden_states = (
+                ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
+            )
 
         target_hidden_states = F.layer_norm(target_hidden_states, (d,))
 
         x, *_ = self.encoder(x, x_t, x_token_ids)
 
-        target_hidden_states = einx.rearrange("b ys d -> (r b) ys d", r = config.predictor_batch_repeat)
-        x = einx.rearrange("b xs d -> (r b) xs d", x, r = config.predictor_batch_repeat)
+        target_hidden_states = einx.rearrange(
+            "b ys d -> (r b) ys d", r=config.predictor_batch_repeat
+        )
+        x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
 
         num_ctx_tokens = int(round(xs * config.predictor_context_capacity))
-        ctx_ids = torch.rand(config.predictor_batch_repeat * b, xs, device=device, dtype=dtype).topk(
-            num_ctx_tokens, dim=-1, sorted=False
-        )
+        ctx_ids = torch.rand(
+            config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
+        ).topk(num_ctx_tokens, dim=-1, sorted=False)
 
         num_target_tokens = int(round(ys * config.predictor_target_capacity))
-        target_ids = torch.rand(config.predictor_batch_repeat * b, ys, device=device, dtype=dtype).topk(
-            num_target_tokens, dim=-1, sorted=False
-        )
+        target_ids = torch.rand(
+            config.predictor_batch_repeat * b, ys, device=device, dtype=dtype
+        ).topk(num_target_tokens, dim=-1, sorted=False)
 
         ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, ctx_ids)
         targets = einx.get_at(
             "rb [ys] d, rb m -> rb m d", target_hidden_states, target_ids
         )
 
-        x = torch.cat((ctx,targets)), 1)
+        x = torch.cat((ctx, targets), 1)
         prediction_mask = torch.zeros(b, x.shape[1], dtype=torch.bool, device=device)
         prediction_mask[:, num_ctx_tokens:] = 1
 

@@ -1,3 +1,5 @@
+viz-outputs/
+
 # Python-generated files
 __pycache__/
 *.py[oc]
