@@ -143,6 +143,7 @@ class Encoder(nn.Module):
 
         x = x + pos_emb
 
+        """
         sliding_window_reach = (config.sliding_window_size - 1) // 2
 
         def mask_mod(b, h, q_idx, kv_idx):
@@ -159,6 +160,14 @@ class Encoder(nn.Module):
         block_mask = create_block_mask(
             mask_mod, B=b, H=None, Q_LEN=s, KV_LEN=s, device=device, BLOCK_SIZE=128
         )
+        """
+
+        attn_mask = einx.equal(
+            "b s1, b s2 -> b h s1 s2",
+            sample_ids,
+            sample_ids,
+            h=config.block_config.attention_config.num_attention_heads,
+        )
 
         temb = self.temb(t)
 
@@ -172,7 +181,7 @@ class Encoder(nn.Module):
             target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
         for i, block in enumerate(self.blocks):
-            x = block(x, temb, block_mask=block_mask)
+            x = block(x, temb, attn_mask=attn_mask)
 
             if return_target_hidden_states:
                 mask = t == (i + 1)
@@ -233,14 +242,6 @@ class Predictor(nn.Module):
 
     def forward(self, x, t, token_ids, prediction_mask):
         config = self.config
-
-        b, s, d = x.shape
-        device, dtype = x.device, x.dtype
-
-        assert einx.matches("b s d", x, d=config.input_size)
-        assert einx.matches("b s", t, b=b, s=s)
-        assert einx.matches("b s three", token_ids, b=b, s=s, three=3)
-        assert einx.matches("b s", prediction_mask, b=b, s=s)
 
         x = self.proj_in(x)
 
@@ -425,7 +426,8 @@ class IJEPADepthSmart(nn.Module):
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")
 
-        is_padding = token_ids[:, num_ctx_tokens:, 0] == MASK_SEQUENCE_ID
-        loss = loss[~is_padding].mean()
+        target_sequence_ids = token_ids[:, num_ctx_tokens:, 0]
+        not_padding_mask = target_sequence_ids != MASK_SEQUENCE_ID
+        loss = loss[not_padding_mask].mean()
 
         return dict(loss=loss, smooth_rank=smooth_rank)
