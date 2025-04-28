@@ -62,11 +62,12 @@ class ContextTargetPatcherConfig:
         assert self.max_num_context_tokens % self.window_size**2 == 0
 
 
-class ContextTargetPatcher:
+class ContextTargetPatcher(nn.Module):
     def __init__(self, config=ContextTargetPatcherConfig()):
+        super().__init__()
         self.config = config
 
-    def __call__(self, row):
+    def forward(self, row):
         """
         x: pixel values of shape (c h w)
         """
@@ -82,7 +83,7 @@ class ContextTargetPatcher:
         max_side_length = min(config.max_side_length, int(input_side_length))
 
         if max_side_length < config.min_side_length:
-            print("Warning, image is too small to process!", input_h, input_w)
+            # print("Warning, image is too small to process!", input_h, input_w)
             return row
 
         sampled_side_length = random.randint(config.min_side_length, max_side_length)
@@ -319,7 +320,9 @@ def main(conf: TrainConfig = TrainConfig()):
     elif conf.mode == "train":
 
         train_dataloader = DataLoader(
-            dataset, num_workers=conf.num_workers, batch_size=None
+            dataset,
+            num_workers=conf.num_workers,
+            batch_size=None,
         )
         model = IJEPADepthSmart(conf.model).to(device)
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)

@@ -3,36 +3,36 @@ conf:
   dtype: bfloat16
   device: cuda
   batch_size: 256
-  num_workers: 2
+  num_workers: 8
   lr: 5e-4
   interp_warmup_steps: 100000
-  train_dataset_pattern: /nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar
-  val_dataset_pattern: /nvme/imagenet1k/imagenet1k-validation-{00..63}.tar
+  train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
+  val_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar
   model:
     encoder:
       input_size: 768
       sliding_window_size: 5
-      num_transformer_blocks: 4
+      num_transformer_blocks: 12
       block_config:
         mlp_config:
-          embed_dim: 64
-          num_experts: 4
+          embed_dim: 384
+          num_experts: 8
           capacity: 1.0
         attention_config:
-          embed_dim: 64
+          embed_dim: 384
           head_dim: 64
-          num_attention_heads: 1
+          num_attention_heads: 6
     predictor:
-      input_size: 64
-      num_transformer_blocks: 2
+      input_size: 384
+      num_transformer_blocks: 6
       block_config:
         mlp_config:
-          embed_dim: 64
-          num_experts: 4
+          embed_dim: 384
+          num_experts: 8
           capacity: 1.0
         attention_config:
-          embed_dim: 64
+          embed_dim: 384
           head_dim: 64
-          num_attention_heads: 1
+          num_attention_heads: 6
     predictor_batch_repeat: 4
   mode: train
