@@ -199,6 +199,10 @@ class TrainConfig:
 
     mode: Literal["make-viz", "train"] = "train"
 
+    def __post_init__(self):
+        assert self.packer_batch_size % self.batch_size == 0
+        assert self.packer_batch_size < self.batch_size
+
 
 def main(conf: TrainConfig = TrainConfig()):
     random.seed(conf.seed)
@@ -232,6 +236,7 @@ def main(conf: TrainConfig = TrainConfig()):
             conf.packer_batch_size,
             pad_value_dict=pad_value_dict,
         )
+        .batched(conf.batch_size // conf.packer_batch_size)
         .shuffle(10)
     )
 
@@ -399,7 +404,7 @@ def main(conf: TrainConfig = TrainConfig()):
 
                 if should_log:
                     num_samples = 0
-                    for ids_seq in x_token_ids.cpu():
+                    for ids_seq in x_token_ids[..., 0].cpu():
                         ids = torch.unique(ids_seq).tolist()
                         try:
                             ids.remove(MASK_SEQUENCE_ID)
