@@ -63,6 +63,66 @@ class TimestepEmbedder(nn.Module):
         return emb
 
 
+def get_1d_rotary_pos_embed(
+    dim: int,
+    pos: torch.Tensor,
+    theta=10000,
+):
+    """
+    Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
+
+    This function calculates a frequency tensor with complex exponentials using the given dimension 'dim' and the end
+    index 'end'. The 'theta' parameter scales the frequencies. The returned tensor contains complex values in complex64
+    data type.
+
+    Args:
+        dim (`int`): Dimension of the frequency tensor.
+        pos (`np.ndarray` or `int`): Position indices for the frequency tensor. [S] or scalar
+        theta (`float`, *optional*, defaults to 10000.0):
+            Scaling factor for frequency computation. Defaults to 10000.0.
+    Returns:
+        `torch.Tensor`: Precomputed frequency tensor with complex exponentials. [S, D/2]
+    """
+    assert dim % 2 == 0
+
+    freqs = 1.0 / (
+        theta
+        ** (
+            torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[
+                : (dim // 2)
+            ]
+            / dim
+        )
+    )  # [D/2]
+    freqs = einx.dot("... s, d2 -> ... s d2", pos, freqs)  # [..., s, D/2]
+    freqs_cos = freqs.cos().repeat_interleave(2, dim=-1).float()  # [..., s, D]
+    freqs_sin = freqs.sin().repeat_interleave(2, dim=-1).float()  # [..., s, D]
+    return freqs_cos, freqs_sin
+
+
+class RopePosEmbedND(nn.Module):
+    # modified from https://github.com/black-forest-labs/flux/blob/c00d7c60b085fce8058b9df845e036090873f2ce/src/flux/modules/layers.py#L11
+    def __init__(self, theta=10000, axes_dim=(32, 32)):
+        super().__init__()
+        self.theta = theta
+        self.axes_dim = axes_dim
+
+    def forward(self, ids: torch.Tensor):
+        n_axes = ids.shape[-1]
+        cos_out = []
+        sin_out = []
+        pos = ids.float()
+        for i in range(n_axes):
+            cos, sin = get_1d_rotary_pos_embed(
+                self.axes_dim[i], pos[..., i], theta=self.theta
+            )
+            cos_out.append(cos)
+            sin_out.append(sin)
+        freqs_cos = torch.cat(cos_out, dim=-1).to(ids.device)
+        freqs_sin = torch.cat(sin_out, dim=-1).to(ids.device)
+        return freqs_cos, freqs_sin
+
+
 class AdaLayerNormShiftScale(nn.Module):
     def __init__(
         self,
@@ -102,18 +162,12 @@ class Encoder(nn.Module):
         self.config = config
 
         self.hidden_size = config.block_config.mlp_config.embed_dim
+        self.head_dim = config.block_config.attention_config.head_dim
 
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
         self.temb = TimestepEmbedder(self.hidden_size)
 
-        self.h_emb = nn.Parameter(
-            torch.empty(config.max_num_height_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.h_emb, std=0.02)
-        self.w_emb = nn.Parameter(
-            torch.empty(config.max_num_width_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.w_emb, std=0.02)
+        self.pos_emb = RopePosEmbedND(axes_dim=(self.head_dim // 2, self.head_dim // 2))
 
         self.blocks = nn.ModuleList(
             TransformerBlock(config.block_config)
@@ -137,30 +191,7 @@ class Encoder(nn.Module):
 
         sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
 
-        hemb = self.h_emb[position_ids[..., 0]]
-        wemb = self.w_emb[position_ids[..., 1]]
-        pos_emb = hemb + wemb
-
-        x = x + pos_emb
-
-        """
-        sliding_window_reach = (config.sliding_window_size - 1) // 2
-
-        def mask_mod(b, h, q_idx, kv_idx):
-            is_same_sample = sample_ids[b, q_idx] == sample_ids[b, kv_idx]
-            is_padding = sample_ids[b, q_idx] == MASK_SEQUENCE_ID
-            q_pos = position_ids[b, q_idx]
-            kv_pos = position_ids[b, kv_idx]
-            cheby_dist = (q_pos - kv_pos).abs().amax(-1)
-            is_in_reach = cheby_dist <= sliding_window_reach
-            return is_same_sample & is_in_reach & ~is_padding
-
-        # TODO
-        # I have to hardcode block_size to 128 to get flex_attention to work
-        block_mask = create_block_mask(
-            mask_mod, B=b, H=None, Q_LEN=s, KV_LEN=s, device=device, BLOCK_SIZE=128
-        )
-        """
+        rotary_embeds = self.pos_emb(position_ids)
 
         attn_mask = einx.equal(
             "b s1, b s2 -> b h s1 s2",
@@ -181,7 +212,7 @@ class Encoder(nn.Module):
             target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
         for i, block in enumerate(self.blocks):
-            x = block(x, temb, attn_mask=attn_mask)
+            x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
             if return_target_hidden_states:
                 mask = t == (i + 1)
@@ -216,6 +247,7 @@ class Predictor(nn.Module):
         self.config = config
 
         self.hidden_size = config.block_config.mlp_config.embed_dim
+        self.head_dim = config.block_config.attention_config.head_dim
 
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
         self.temb = TimestepEmbedder(self.hidden_size)
@@ -223,14 +255,7 @@ class Predictor(nn.Module):
         self.p_emb = nn.Parameter(torch.empty(self.hidden_size))
         init.trunc_normal_(self.p_emb, std=0.02)
 
-        self.h_emb = nn.Parameter(
-            torch.empty(config.max_num_height_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.h_emb, std=0.02)
-        self.w_emb = nn.Parameter(
-            torch.empty(config.max_num_width_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.w_emb, std=0.02)
+        self.pos_emb = RopePosEmbedND(axes_dim=(self.head_dim // 2, self.head_dim // 2))
 
         self.blocks = nn.ModuleList(
             TransformerBlock(config.block_config)
@@ -247,16 +272,12 @@ class Predictor(nn.Module):
 
         sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
 
-        hemb = self.h_emb[position_ids[..., 0]]
-        wemb = self.w_emb[position_ids[..., 1]]
-        pos_emb = hemb + wemb
-
         p_emb = einx.multiply("d, b s -> b s d", self.p_emb, prediction_mask)
 
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
-        x = x + pos_emb + p_emb
+        x = x + p_emb
 
         temb = self.temb(t)
 
@@ -267,8 +288,10 @@ class Predictor(nn.Module):
             h=config.block_config.attention_config.num_attention_heads,
         )
 
+        rotary_embeds = self.pos_emb(position_ids)
+
         for block in self.blocks:
-            x = block(x, temb, attn_mask=attn_mask)
+            x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
         x = self.norm_out(x, temb)
         x = self.proj_out(x)
@@ -289,7 +312,6 @@ class IJEPADepthSmartConfig:
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
 
-    should_tie_predictor_pos_emb: bool = True
     should_tie_predictor_temb: bool = True
     should_tie_predictor_norm_out: bool = True
 
@@ -305,10 +327,6 @@ class IJEPADepthSmart(nn.Module):
         self.ema_encoder.requires_grad_(False)
 
         self.predictor = Predictor(config.predictor)
-
-        if config.should_tie_predictor_pos_emb:
-            self.predictor.h_emb = self.encoder.h_emb
-            self.predictor.w_emb = self.encoder.w_emb
 
         if config.should_tie_predictor_temb:
             self.predictor.temb = self.encoder.temb

@@ -3,9 +3,58 @@ import math
 import torch
 from torch.nn import init
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.attention.flex_attention import flex_attention
 from torch import nn
 from dataclasses import dataclass, field
+
+
+def apply_rotary_emb(
+    x: torch.Tensor,
+    freqs_cis: tuple[torch.Tensor, torch.Tensor],
+) -> torch.Tensor:
+    """
+    Adapted from diffusers/src/diffusers/models/embeddings.py L697
+    https://github.com/huggingface/diffusers/blob/58431f102cf39c3c8a569f32d71b2ea8caa461e1/src/diffusers/models/embeddings.py#L1176
+
+
+    Apply rotary embeddings to input tensors using the given frequency tensor. This function applies rotary embeddings
+    to the given query or key 'x' tensors using the provided frequency tensor 'freqs_cis'. The input tensors are
+    reshaped as complex numbers, and the frequency tensor is reshaped for broadcasting compatibility. The resulting
+    tensors contain rotary embeddings and are returned as real tensors.
+
+    Args:
+        x (`torch.Tensor`):
+            Query or key tensor to apply rotary embeddings. [B, H, S, D] xk (torch.Tensor): Key tensor to apply
+        freqs_cis (`Tuple[torch.Tensor]`): Precomputed frequency tensor for complex exponentials. ([(B), S, D], [(B), S, D],)
+            Where (B) dim is optional
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor and key tensor with rotary embeddings.
+    """
+    cos, sin = freqs_cis  # [(B) S, D]
+
+    x_real, x_imag = einx.rearrange("b h s (hd two) -> two b h s hd", x, two=2)
+    x_rotated = torch.stack([-x_imag, x_real], dim=-1)
+    x_rotated = einx.rearrange("b h s hd two -> b h s (hd two)", x_rotated)
+
+    og_dtype = x.dtype
+
+    x = x.float()
+    x_rotated = x_rotated.float()
+
+    # (B) S D -> (B) H S D
+    is_batched = cos.ndim == 3
+    if is_batched:
+        cos = cos.unsqueeze(1)
+        sin = sin.unsqueeze(1)
+    else:
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+
+    x = x * cos + x_rotated * sin
+    x = x.to(og_dtype)
+
+    return x
 
 
 @dataclass
@@ -32,7 +81,7 @@ class Attention(nn.Module):
             config.num_attention_heads * config.head_dim, config.embed_dim, bias=False
         )
 
-    def forward(self, x, block_mask=None, attn_mask=None):
+    def forward(self, x, block_mask=None, attn_mask=None, rotary_embeds=None):
         assert not ((attn_mask is not None) and block_mask is not None)
 
         q, k, v = einx.rearrange(
@@ -46,17 +95,21 @@ class Attention(nn.Module):
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        # Hack for pytorch 2.6
-        # Because flex attention doesn't currently work with autocast
-        smallest_dtype = torch.float32
-        for tensor in q, k, v:
-            if tensor.dtype.itemsize < smallest_dtype.itemsize:
-                smallest_dtype = tensor.dtype
-        q = q.to(smallest_dtype)
-        k = k.to(smallest_dtype)
-        v = v.to(smallest_dtype)
+        if rotary_embeds is not None:
+            q = apply_rotary_emb(q, rotary_embeds)
+            k = apply_rotary_emb(k, rotary_embeds)
 
         if block_mask is not None:
+            # Hack for pytorch 2.6
+            # Because flex attention doesn't currently work with autocast
+            smallest_dtype = torch.float32
+            for tensor in q, k, v:
+                if tensor.dtype.itemsize < smallest_dtype.itemsize:
+                    smallest_dtype = tensor.dtype
+            q = q.to(smallest_dtype)
+            k = k.to(smallest_dtype)
+            v = v.to(smallest_dtype)
+
             out = flex_attention(q, k, v, block_mask=block_mask)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
@@ -188,6 +241,7 @@ class DiffMoeMLP(nn.Module):
             y = einx.add("(k n) d, n d -> (k n) d", y, self.b2s)
 
         y = einx.multiply("(k n) d, k n -> (k n) d", y, kept_expert_weights)
+        y = y.to(x.dtype)
 
         x = torch.index_add(x, 0, kept_expert_idx, y)
 
@@ -226,11 +280,14 @@ class TransformerBlock(nn.Module):
         self.attention = Attention(self.config.attention_config)
         self.mlp = DiffMoeMLP(self.config.mlp_config)
 
-    def forward(self, x, t, block_mask=None, attn_mask=None):
+    def forward(self, x, t, block_mask=None, attn_mask=None, rotary_embeds=None):
         x = (
             x
             + self.attention(
-                self.norm1(x, t), block_mask=block_mask, attn_mask=attn_mask
+                self.norm1(x, t),
+                block_mask=block_mask,
+                attn_mask=attn_mask,
+                rotary_embeds=rotary_embeds,
             )[0]
         )
         x = self.mlp(x)
