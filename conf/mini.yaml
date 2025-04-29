@@ -11,28 +11,25 @@ conf:
   model:
     encoder:
       input_size: 768
-      sliding_window_size: 5
-      num_transformer_blocks: 12
+      num_transformer_blocks: 8
       block_config:
         mlp_config:
-          embed_dim: 384
-          num_experts: 8
-          capacity: 1.0
+          embed_dim: 128
+          num_experts: 4
         attention_config:
-          embed_dim: 384
+          embed_dim: 128
           head_dim: 64
-          num_attention_heads: 6
+          num_attention_heads: 2
     predictor:
-      input_size: 384
-      num_transformer_blocks: 6
+      input_size: 128
+      num_transformer_blocks: 2
       block_config:
         mlp_config:
-          embed_dim: 384
-          num_experts: 8
-          capacity: 1.0
+          embed_dim: 128
+          num_experts: 4
         attention_config:
-          embed_dim: 384
+          embed_dim: 128
           head_dim: 64
-          num_attention_heads: 6
+          num_attention_heads: 2
     predictor_batch_repeat: 4
   mode: train

@@ -271,14 +271,16 @@ def main(conf: TrainConfig = TrainConfig()):
         patch_border.diagonal().zero_()
         patch_border = patch_border * patch_border.flip(0)
         patch_border = einx.rearrange("ph pw c -> (ph pw c)", patch_border)
-        sample["x_patches"]["patches"] = einx.multiply(
-            "... d, d", sample["x_patches"]["patches"], patch_border
+
+        x_patches, y_patches = sample
+        x_patches["patches"] = einx.multiply(
+            "... d, d", x_patches["patches"], patch_border
         )
 
-        b = sample["x_patches"].size(0)
+        b = x_patches.size(0)
         for i in range(b):
-            x_seq = sample["x_patches"].iloc[i]
-            y_seq = sample["y_patches"].iloc[i]
+            x_seq = x_patches.iloc[i]
+            y_seq = y_patches.iloc[i]
             sequence_ids = x_seq["sequence_ids"].unique().tolist()
             for j in sequence_ids:
                 if j == MASK_SEQUENCE_ID:
@@ -295,8 +297,12 @@ def main(conf: TrainConfig = TrainConfig()):
                 assert x_sample.size(0) > 0
                 assert y_sample.size(0) > 0
 
-                min_ph_pw = y_sample["position_ids"].amin(0)
-                max_ph_pw = y_sample["position_ids"].amax(0)
+                all_position_ids = torch.cat(
+                    (x_sample["position_ids"], y_sample["position_ids"]), 0
+                )
+
+                min_ph_pw = all_position_ids.amin(0)
+                max_ph_pw = all_position_ids.amax(0)
 
                 ph, pw = (max_ph_pw - min_ph_pw + 1).tolist()
 
