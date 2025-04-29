@@ -19,6 +19,7 @@ import wandb
 import cabbage_patch
 import tensorset
 import webdataset as wds
+from transformers.optimization import get_constant_schedule_with_warmup
 
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
 
@@ -198,10 +199,12 @@ class TrainConfig:
     packer_batch_size: int = 16
     num_workers: int = 0
     seed: int = 42
+    num_warmup_steps: int = 5000
     lr: float = 5e-4
     num_epochs: int = 10
 
     log_every_num_steps: int = 50
+    validate_every_num_epochs: int = 5
 
     validation_probe_lr: float = 1e-3
     validation_image_size: int = 256
@@ -367,6 +370,9 @@ def main(conf: TrainConfig = TrainConfig()):
         optimizer = torch.optim.AdamW(
             trainable_params, lr=conf.lr, betas=(0.9, 0.95), weight_decay=0.05
         )
+        lr_scheduler = get_constant_schedule_with_warmup(
+            optimizer, num_warmup_steps=conf.num_warmup_steps
+        )
 
         conf_d = asdict(conf)
         conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
@@ -442,15 +448,12 @@ def main(conf: TrainConfig = TrainConfig()):
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
+                    lr_scheduler.step()
 
                     for ema_p, p in zip(
                         model.ema_encoder.parameters(), model.encoder.parameters()
                     ):
                         ema_p.lerp_(p, 1 - conf.ema_beta)
-
-                    lr = conf.lr
-                    for g in optimizer.param_groups:
-                        g["lr"] = lr
 
                     if should_log:
                         num_samples = 0
@@ -467,7 +470,7 @@ def main(conf: TrainConfig = TrainConfig()):
                                 epoch=epoch,
                                 loss=loss,
                                 num_samples=num_samples,
-                                lr=lr,
+                                lr=lr_scheduler.get_last_lr()[-1],
                                 smooth_rank=result_dict["smooth_rank"],
                                 interp=interp,
                             ),
@@ -594,17 +597,25 @@ def main(conf: TrainConfig = TrainConfig()):
 
                 return accuracy
 
-            gc.collect()
-            torch.cuda.empty_cache()
+            is_last_epoch = epoch == conf.num_epochs - 1
+            should_validate = (
+                conf.test_mode
+                or is_last_epoch
+                or ((epoch > 0) and (epoch % conf.validate_every_num_epochs == 0))
+            )
 
-            accuracy = validate()
+            if should_validate:
+                gc.collect()
+                torch.cuda.empty_cache()
 
-            gc.collect()
-            torch.cuda.empty_cache()
+                accuracy = validate()
 
-            wandb.log({"acc@1": accuracy}, step=training_state["global_step"])
+                gc.collect()
+                torch.cuda.empty_cache()
 
-            print("EPOCH", epoch, "accuracy", accuracy)
+                wandb.log({"acc@1": accuracy}, step=training_state["global_step"])
+
+                print("EPOCH", epoch, "accuracy", accuracy)
 
             if conf.test_mode:
                 break

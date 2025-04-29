@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.2.5",
     "torch>=2.7.0",
     "torchvision>=0.22.0",
+    "transformers>=4.51.3",
     "wandb[media]>=0.19.10",
     "webdataset>=0.2.111",
 ]
