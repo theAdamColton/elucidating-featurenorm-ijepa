@@ -323,6 +323,10 @@ class IJEPADepthSmart(nn.Module):
         device, dtype = x.device, x.dtype
 
         b, xs, d = x.shape
+
+        y = torch.cat((x, y), 1)
+        y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
+
         b, ys, d = y.shape
 
         if config.depthsmart_mode == "random":

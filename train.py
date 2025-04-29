@@ -1,6 +1,8 @@
 from typing import Literal
+import gc
 from contextlib import contextmanager
 import torch.nn.functional as F
+from torchvision.transforms import InterpolationMode
 from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +72,8 @@ class ContextTargetPatcher(nn.Module):
     def forward(self, row):
         """
         x: pixel values of shape (c h w)
+
+        TODO speed up the patching
         """
         config = self.config
         x = row.pop("pixel_values")
@@ -103,7 +107,9 @@ class ContextTargetPatcher(nn.Module):
             image_crop_size = tuple(size + multiple_of for size in image_crop_size)
             num_windows = sum(size // multiple_of for size in image_crop_size)
 
-        x = torchvision.transforms.Resize(image_crop_size)(x)
+        x = torchvision.transforms.Resize(
+            image_crop_size, interpolation=InterpolationMode.NEAREST, antialias=False
+        )(x)
 
         x = einx.rearrange("c (np ps)... -> np... (ps... c)", x, ps=config.patch_size)
 
@@ -129,20 +135,25 @@ class ContextTargetPatcher(nn.Module):
         else:
             num_ctx_windows = random.randint(1, max_num_ctx_windows)
 
-        num_target_windows = nw - num_ctx_windows
-        random_ids = torch.randperm(nw, device=x.device)
-        ctx_ids = random_ids[:num_ctx_windows]
+        random_ids = torch.randperm(nw)
 
-        ctx = x[ctx_ids]
-        ctx_position_ids = position_ids[ctx_ids]
+        # [nw] ws d, nw -> nw ws d
+        x = x[random_ids]
+        position_ids = position_ids[random_ids]
 
-        target = x
+        ctx, target = x[:num_ctx_windows], x[num_ctx_windows:]
+        ctx_position_ids, target_position_ids = (
+            position_ids[:num_ctx_windows],
+            position_ids[num_ctx_windows:],
+        )
 
-        ctx = einx.rearrange("nw ws d -> (nw ws) d", ctx)
-        ctx_position_ids = einx.rearrange("nw ws nd -> (nw ws) nd", ctx_position_ids)
+        ctx = einx.rearrange("nxw ws d -> (nxw ws) d", ctx)
+        ctx_position_ids = einx.rearrange("nxw ws nd -> (nxw ws) nd", ctx_position_ids)
 
-        target = einx.rearrange("nw ws d -> (nw ws) d", target)
-        target_position_ids = einx.rearrange("nw ws nd -> (nw ws) nd", position_ids)
+        target = einx.rearrange("nyw ws d -> (nyw ws) d", target)
+        target_position_ids = einx.rearrange(
+            "nyw ws nd -> (nyw ws) nd", target_position_ids
+        )
 
         row["x_patches"] = tensorset.TensorSet(
             patches=ctx, position_ids=ctx_position_ids
@@ -164,7 +175,7 @@ class TrainConfig:
     dtype: str = "bfloat16"
     device: str = "cuda"
     batch_size: int = 256
-    packer_batch_size: int = 8
+    packer_batch_size: int = 16
     num_workers: int = 0
     seed: int = 42
     lr: float = 5e-4
@@ -323,6 +334,7 @@ def main(conf: TrainConfig = TrainConfig()):
             dataset,
             num_workers=conf.num_workers,
             batch_size=None,
+            multiprocessing_context="spawn",
         )
         model = IJEPADepthSmart(conf.model).to(device)
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
@@ -342,6 +354,7 @@ def main(conf: TrainConfig = TrainConfig()):
 
         if conf.should_compile:
             model = torch.compile(model, mode="max-autotune")
+            model.encoder = torch.compile(model.encoder)
 
         @contextmanager
         def autocast_fn():
@@ -351,90 +364,94 @@ def main(conf: TrainConfig = TrainConfig()):
         training_state = dict(global_step=0)
 
         for epoch in range(conf.num_epochs):
-            for batch in tqdm(train_dataloader, desc=f"training epoch {epoch}"):
-                x_patches_ts, y_patches_ts, *_ = batch
 
-                x_patches = x_patches_ts.named_columns.pop("patches")
-                x_position_ids = x_patches_ts.named_columns.pop("position_ids")
-                x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
-                x_token_ids = torch.cat(
-                    (x_sequence_ids.unsqueeze(-1), x_position_ids), -1
-                )
+            def train_epoch():
+                for batch in tqdm(train_dataloader, desc=f"training epoch {epoch}"):
+                    x_patches_ts, y_patches_ts, *_ = batch
 
-                y_patches = y_patches_ts.named_columns.pop("patches")
-                y_position_ids = y_patches_ts.named_columns.pop("position_ids")
-                y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
-                y_token_ids = torch.cat(
-                    (y_sequence_ids.unsqueeze(-1), y_position_ids), -1
-                )
-
-                x_patches = x_patches.to(device=device, dtype=dtype)
-                x_patches = (x_patches / 255) * 2 - 1
-                y_patches = y_patches.to(device=device, dtype=dtype)
-                y_patches = (y_patches / 255) * 2 - 1
-
-                x_token_ids = x_token_ids.to(device)
-                y_token_ids = y_token_ids.to(device)
-
-                interp = min(
-                    1, training_state["global_step"] / conf.interp_warmup_steps
-                )
-
-                should_log = (
-                    training_state["global_step"] % conf.log_every_num_steps
-                ) == 0
-
-                with autocast_fn():
-                    result_dict = model(
-                        x_patches,
-                        y_patches,
-                        x_token_ids,
-                        y_token_ids,
-                        interp=interp,
-                        return_smooth_rank=should_log,
+                    x_patches = x_patches_ts.named_columns.pop("patches")
+                    x_position_ids = x_patches_ts.named_columns.pop("position_ids")
+                    x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
+                    x_token_ids = torch.cat(
+                        (x_sequence_ids.unsqueeze(-1), x_position_ids), -1
                     )
 
-                loss = result_dict["loss"]
+                    y_patches = y_patches_ts.named_columns.pop("patches")
+                    y_position_ids = y_patches_ts.named_columns.pop("position_ids")
+                    y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
+                    y_token_ids = torch.cat(
+                        (y_sequence_ids.unsqueeze(-1), y_position_ids), -1
+                    )
 
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
+                    x_patches = x_patches.to(device=device, dtype=dtype)
+                    x_patches = (x_patches / 255) * 2 - 1
+                    y_patches = y_patches.to(device=device, dtype=dtype)
+                    y_patches = (y_patches / 255) * 2 - 1
 
-                for ema_p, p in zip(
-                    model.ema_encoder.parameters(), model.encoder.parameters()
-                ):
-                    ema_p.lerp_(p, 1 - conf.ema_beta)
+                    x_token_ids = x_token_ids.to(device)
+                    y_token_ids = y_token_ids.to(device)
 
-                lr = conf.lr
-                for g in optimizer.param_groups:
-                    g["lr"] = lr
+                    interp = min(
+                        1, training_state["global_step"] / conf.interp_warmup_steps
+                    )
 
-                if should_log:
-                    num_samples = 0
-                    for ids_seq in x_token_ids[..., 0].cpu():
-                        ids = torch.unique(ids_seq).tolist()
-                        try:
-                            ids.remove(MASK_SEQUENCE_ID)
-                        except:
-                            pass
-                        num_samples += len(ids)
+                    should_log = (
+                        training_state["global_step"] % conf.log_every_num_steps
+                    ) == 0
 
-                    wandb.log(
-                        dict(
-                            epoch=epoch,
-                            loss=loss,
-                            num_samples=num_samples,
-                            lr=lr,
-                            smooth_rank=result_dict["smooth_rank"],
+                    with autocast_fn():
+                        result_dict = model(
+                            x_patches,
+                            y_patches,
+                            x_token_ids,
+                            y_token_ids,
                             interp=interp,
-                        ),
-                        step=training_state["global_step"],
-                    )
+                            return_smooth_rank=should_log,
+                        )
 
-                training_state["global_step"] += 1
+                    loss = result_dict["loss"]
 
-                if conf.test_mode:
-                    break
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                    for ema_p, p in zip(
+                        model.ema_encoder.parameters(), model.encoder.parameters()
+                    ):
+                        ema_p.lerp_(p, 1 - conf.ema_beta)
+
+                    lr = conf.lr
+                    for g in optimizer.param_groups:
+                        g["lr"] = lr
+
+                    if should_log:
+                        num_samples = 0
+                        for ids_seq in x_token_ids[..., 0].cpu():
+                            ids = torch.unique(ids_seq).tolist()
+                            try:
+                                ids.remove(MASK_SEQUENCE_ID)
+                            except:
+                                pass
+                            num_samples += len(ids)
+
+                        wandb.log(
+                            dict(
+                                epoch=epoch,
+                                loss=loss,
+                                num_samples=num_samples,
+                                lr=lr,
+                                smooth_rank=result_dict["smooth_rank"],
+                                interp=interp,
+                            ),
+                            step=training_state["global_step"],
+                        )
+
+                    training_state["global_step"] += 1
+
+                    if conf.test_mode:
+                        break
+
+            train_epoch()
 
             def validate():
                 def _load_simple_dataloader(pattern):
@@ -459,7 +476,7 @@ def main(conf: TrainConfig = TrainConfig()):
                 def _embed_dataset(dl):
                     embeddings = []
                     labels = []
-                    for batch in tqdm(dl, desc="embedding val dataset"):
+                    for batch in tqdm(dl, desc="embedding val train dataset"):
                         patches = batch["patches"]
                         label = batch["label"]
                         token_ids = batch["token_ids"]
@@ -549,7 +566,14 @@ def main(conf: TrainConfig = TrainConfig()):
 
                 return accuracy
 
+            gc.collect()
+            torch.cuda.empty_cache()
+
             accuracy = validate()
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
             wandb.log({"acc@1": accuracy}, step=training_state["global_step"])
 
             print("EPOCH", epoch, "accuracy", accuracy)
