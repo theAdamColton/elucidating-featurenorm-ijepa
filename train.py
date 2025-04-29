@@ -407,13 +407,17 @@ def main(conf: TrainConfig = TrainConfig()):
                         (y_sequence_ids.unsqueeze(-1), y_position_ids), -1
                     )
 
-                    x_patches = x_patches.to(device=device, dtype=dtype)
+                    x_patches = x_patches.to(
+                        device=device, dtype=dtype, non_blocking=True
+                    )
                     x_patches = (x_patches / 255) * 2 - 1
-                    y_patches = y_patches.to(device=device, dtype=dtype)
+                    y_patches = y_patches.to(
+                        device=device, dtype=dtype, non_blocking=True
+                    )
                     y_patches = (y_patches / 255) * 2 - 1
 
-                    x_token_ids = x_token_ids.to(device)
-                    y_token_ids = y_token_ids.to(device)
+                    x_token_ids = x_token_ids.to(device, non_blocking=True)
+                    y_token_ids = y_token_ids.to(device, non_blocking=True)
 
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
