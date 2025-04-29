@@ -354,7 +354,6 @@ def main(conf: TrainConfig = TrainConfig()):
 
         if conf.should_compile:
             model = torch.compile(model, mode="max-autotune")
-            model.encoder = torch.compile(model.encoder)
 
         @contextmanager
         def autocast_fn():
