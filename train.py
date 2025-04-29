@@ -64,6 +64,15 @@ class ContextTargetPatcherConfig:
         assert self.max_num_context_tokens % self.window_size**2 == 0
 
 
+def patch(x, patch_size=8):
+    h, w, c = x.shape
+    nph, npw = h // patch_size, w // patch_size
+    x = x.reshape(nph, patch_size, npw, patch_size, c)
+    x = x.permute(0, 2, 1, 3, 4)
+    x = x.reshape(nph, npw, patch_size, patch_size, c)
+    return x
+
+
 class ContextTargetPatcher(nn.Module):
     def __init__(self, config=ContextTargetPatcherConfig()):
         super().__init__()
@@ -71,17 +80,18 @@ class ContextTargetPatcher(nn.Module):
 
     def forward(self, row):
         """
-        x: pixel values of shape (c h w)
-
-        TODO speed up the patching
+        x: PIL image
         """
         config = self.config
+        patch_size = config.patch_size
+        c = 3
+
         x = row.pop("pixel_values")
 
         row["x_patches"] = None
         row["y_patches"] = None
 
-        c, input_h, input_w = x.shape
+        input_h, input_w = x.size
 
         input_side_length = (input_h + input_w) / 2
         max_side_length = min(config.max_side_length, int(input_side_length))
@@ -107,22 +117,30 @@ class ContextTargetPatcher(nn.Module):
             image_crop_size = tuple(size + multiple_of for size in image_crop_size)
             num_windows = sum(size // multiple_of for size in image_crop_size)
 
-        x = torchvision.transforms.Resize(
-            image_crop_size, interpolation=InterpolationMode.NEAREST, antialias=False
-        )(x)
+        # nearest resampling
+        x = x.convert("RGB").resize(image_crop_size, resample=0)
+        x = torch.from_numpy(np.array(x))
 
-        x = einx.rearrange("c (np ps)... -> np... (ps... c)", x, ps=config.patch_size)
+        # (nph ph) (npw pw) c -> nph npw ph pw c
+        x = patch(x, patch_size)
+        # nph npw ph pw c -> nph npw (ph pw c)
+        x = x.reshape(x.shape[0], x.shape[1], patch_size**2 * c)
 
         position_ids = torch.meshgrid(
             (torch.arange(x.shape[0]), torch.arange(x.shape[1])), indexing="ij"
         )
         position_ids = torch.stack(position_ids, -1)
 
-        x = einx.rearrange(
-            "(nw ws)... d -> (nw...) (ws...) d", x, ws=config.window_size
-        )
-        position_ids = einx.rearrange(
-            "(nw ws)... nd -> (nw...) (ws...) nd", position_ids, ws=config.window_size
+        # (nwh wh) (nww ww) d -> nwh nww wh ww d
+        x = patch(x, config.window_size)
+        # nwh nww wh ww d -> (nwh nww) (wh ww) d
+        x = x.reshape(-1, config.window_size**2, x.shape[-1])
+
+        # (nwh wh) (nww ww) nd -> nwh nww wh ww nd
+        position_ids = patch(position_ids, config.window_size)
+        # nwh nww wh ww nd -> (nwh nww) (wh ww) nd
+        position_ids = position_ids.reshape(
+            -1, config.window_size**2, position_ids.shape[-1]
         )
 
         nw, ws, d = x.shape
@@ -147,12 +165,14 @@ class ContextTargetPatcher(nn.Module):
             position_ids[num_ctx_windows:],
         )
 
-        ctx = einx.rearrange("nxw ws d -> (nxw ws) d", ctx)
-        ctx_position_ids = einx.rearrange("nxw ws nd -> (nxw ws) nd", ctx_position_ids)
+        # nxw ws d -> (nxw ws) d
+        ctx = ctx.reshape(-1, ctx.shape[-1])
+        ctx_position_ids = ctx_position_ids.reshape(-1, ctx_position_ids.shape[-1])
 
-        target = einx.rearrange("nyw ws d -> (nyw ws) d", target)
-        target_position_ids = einx.rearrange(
-            "nyw ws nd -> (nyw ws) nd", target_position_ids
+        # nyw ws d -> (nyw ws) d
+        target = target.reshape(-1, target.shape[-1])
+        target_position_ids = target_position_ids.reshape(
+            -1, target_position_ids.shape[-1]
         )
 
         row["x_patches"] = tensorset.TensorSet(
@@ -242,7 +262,7 @@ def main(conf: TrainConfig = TrainConfig()):
             nodesplitter=wds.split_by_node,
         )
         .shuffle(1000)
-        .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
+        .decode("pil", handler=wds.handlers.warn_and_continue)
         .rename(pixel_values=conf.image_column_name)
         .map(ContextTargetPatcher(conf.patcher))
         .select(filter_rows)
@@ -340,7 +360,6 @@ def main(conf: TrainConfig = TrainConfig()):
             dataset,
             num_workers=conf.num_workers,
             batch_size=None,
-            multiprocessing_context="spawn",
         )
         model = IJEPADepthSmart(conf.model).to(device)
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
@@ -359,7 +378,7 @@ def main(conf: TrainConfig = TrainConfig()):
         )
 
         if conf.should_compile:
-            model = torch.compile(model, mode="max-autotune")
+            model = torch.compile(model)
 
         @contextmanager
         def autocast_fn():

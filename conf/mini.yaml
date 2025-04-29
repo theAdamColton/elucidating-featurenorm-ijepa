@@ -3,7 +3,7 @@ conf:
   dtype: bfloat16
   device: cuda
   batch_size: 256
-  num_workers: 8
+  num_workers: 4
   lr: 5e-4
   interp_warmup_steps: 100000
   train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
