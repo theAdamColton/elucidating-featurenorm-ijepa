@@ -197,7 +197,7 @@ class TrainConfig:
     batch_size: int = 256
     packer_batch_size: int = 16
     num_workers: int = 0
-    seed: int = 69
+    seed: int = 420
     num_warmup_steps: int = 5000
     lr: float = 5e-4
     num_epochs: int = 100
@@ -215,6 +215,7 @@ class TrainConfig:
     num_image_channels: int = 3
 
     ema_beta: float = 0.996
+    ema_beta_warmup_steps: int = 1000
     interp_warmup_steps: int = 100000
 
     # Webdataset tars
@@ -427,6 +428,14 @@ def main(conf: TrainConfig = TrainConfig()):
                     )
                     interp = 0
 
+                    ema_beta = (
+                        min(
+                            1,
+                            training_state["global_step"] / conf.ema_beta_warmup_steps,
+                        )
+                        * conf.ema_beta
+                    )
+
                     should_log = (
                         training_state["global_step"] % conf.log_every_num_steps
                     ) == 0
@@ -451,7 +460,7 @@ def main(conf: TrainConfig = TrainConfig()):
                     for ema_p, p in zip(
                         model.ema_encoder.parameters(), model.encoder.parameters()
                     ):
-                        ema_p.lerp_(p, 1 - conf.ema_beta)
+                        ema_p.lerp_(p, 1 - ema_beta)
 
                     if should_log:
                         num_samples = 0
@@ -469,6 +478,7 @@ def main(conf: TrainConfig = TrainConfig()):
                                 loss=loss,
                                 num_samples=num_samples,
                                 lr=lr_scheduler.get_last_lr()[-1],
+                                ema_beta=ema_beta,
                                 smooth_rank=result_dict["smooth_rank"],
                                 interp=interp,
                             ),
