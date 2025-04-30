@@ -32,4 +32,5 @@ conf:
           head_dim: 64
           num_attention_heads: 2
     predictor_batch_repeat: 4
+    depthsmart_mode: disabled
   mode: train

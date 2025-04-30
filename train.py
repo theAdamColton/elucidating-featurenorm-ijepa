@@ -2,7 +2,6 @@ from typing import Literal
 import gc
 from contextlib import contextmanager
 import torch.nn.functional as F
-from torchvision.transforms import InterpolationMode
 from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
@@ -428,6 +427,7 @@ def main(conf: TrainConfig = TrainConfig()):
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
                     )
+                    interp = 0
 
                     should_log = (
                         training_state["global_step"] % conf.log_every_num_steps

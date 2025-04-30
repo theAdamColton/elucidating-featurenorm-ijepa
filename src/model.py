@@ -352,9 +352,7 @@ class IJEPADepthSmart(nn.Module):
                 0, config.encoder.num_transformer_blocks + 1, (b,), device=device
             )
         elif config.depthsmart_mode == "disabled":
-            t = torch.full(
-                (b,), config.encoder.num_transformer_blocks + 1, device=device
-            )
+            t = torch.full((b,), config.encoder.num_transformer_blocks, device=device)
         else:
             raise ValueError(config.depthsmart_mode)
 
