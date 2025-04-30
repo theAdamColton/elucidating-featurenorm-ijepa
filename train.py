@@ -359,9 +359,7 @@ def main(conf: TrainConfig = TrainConfig()):
     elif conf.mode == "train":
 
         train_dataloader = DataLoader(
-            dataset,
-            num_workers=conf.num_workers,
-            batch_size=None,
+            dataset, num_workers=conf.num_workers, batch_size=None, drop_last=True
         )
         model = IJEPADepthSmart(conf.model).to(device)
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
