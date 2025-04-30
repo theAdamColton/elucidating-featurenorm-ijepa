@@ -352,7 +352,7 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
         )
-        print("ACCURACY", accuracy)
+        print("ACCURACIES", accuracies)
 
     elif conf.mode == "train":
         train_dataloader = DataLoader(
@@ -522,6 +522,7 @@ def main(conf: MainConfig = MainConfig()):
                 torch.cuda.empty_cache()
 
                 depths = list(range(len(accuracies)))
+                best_accuracy = max(accuracies)
 
                 line_series = wandb.plot.line_series(
                     xs=depths,
@@ -532,7 +533,11 @@ def main(conf: MainConfig = MainConfig()):
                 )
 
                 wandb.log(
-                    {"depth vs acc@1": line_series, "epoch": epoch},
+                    {
+                        "depth vs acc@1": line_series,
+                        "epoch": epoch,
+                        "acc@1": best_accuracy,
+                    },
                     step=training_state["global_step"],
                 )
 
