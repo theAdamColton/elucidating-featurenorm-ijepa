@@ -522,7 +522,7 @@ def main(conf: TrainConfig = TrainConfig()):
                         # Full depth
                         t = torch.full(
                             (b, s),
-                            conf.model.encoder.num_transformer_blocks + 1,
+                            conf.model.encoder.num_transformer_blocks,
                             device=device,
                         )
 
