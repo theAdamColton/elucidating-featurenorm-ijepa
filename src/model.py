@@ -176,7 +176,14 @@ class Encoder(nn.Module):
 
         self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
 
-    def forward(self, x, t, token_ids, return_target_hidden_states=False):
+    def forward(
+        self,
+        x,
+        t,
+        token_ids,
+        return_target_hidden_states=False,
+        return_all_layer_features=False,
+    ):
         config = self.config
 
         b, s, d = x.shape
@@ -184,6 +191,8 @@ class Encoder(nn.Module):
         assert einx.matches("b s d", x, d=config.input_size)
         assert einx.matches("b s", t, b=b, s=s)
         assert einx.matches("b s three", token_ids, b=b, s=s, three=3)
+
+        assert not (return_target_hidden_states and return_all_layer_features)
 
         device, dtype = x.device, x.dtype
 
@@ -211,19 +220,38 @@ class Encoder(nn.Module):
             # basically masked fill
             target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
+        elif return_all_layer_features:
+            all_layer_features = torch.empty(
+                config.num_transformer_blocks + 1,
+                b,
+                s,
+                self.hidden_size,
+                device=device,
+                dtype=dtype,
+            )
+
+            all_layer_features[0] = x
+
         for i, block in enumerate(self.blocks):
             x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
+
+            is_last_block = i + 1 == len(self.blocks)
+
+            if is_last_block:
+                x = self.norm_out(x, temb)
 
             if return_target_hidden_states:
                 mask = t == (i + 1)
                 target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
-        x = self.norm_out(x, temb)
+            elif return_all_layer_features:
+                all_layer_features[i + 1] = x
 
         if return_target_hidden_states:
-            target_hidden_states = self.norm_out(target_hidden_states, temb)
-
             return x, target_hidden_states
+
+        elif return_all_layer_features:
+            return x, all_layer_features
 
         return (x,)
 

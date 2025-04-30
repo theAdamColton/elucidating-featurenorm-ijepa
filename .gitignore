@@ -1,4 +1,5 @@
 viz-outputs/
+checkpoints/
 wandb/
 
 # Python-generated files
