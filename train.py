@@ -276,7 +276,7 @@ def main(conf: TrainConfig = TrainConfig()):
         )
         .shuffle(16)
         .to_tuple("x_patches", "y_patches")
-        .batched(conf.batch_size // conf.packer_batch_size)
+        .batched(conf.batch_size // conf.packer_batch_size, partial=False)
     )
 
     if conf.mode == "make-viz":
@@ -359,7 +359,7 @@ def main(conf: TrainConfig = TrainConfig()):
     elif conf.mode == "train":
 
         train_dataloader = DataLoader(
-            dataset, num_workers=conf.num_workers, batch_size=None, drop_last=True
+            dataset, num_workers=conf.num_workers, batch_size=None
         )
         model = IJEPADepthSmart(conf.model).to(device)
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
@@ -425,7 +425,6 @@ def main(conf: TrainConfig = TrainConfig()):
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
                     )
-                    interp = 0
 
                     should_log = (
                         training_state["global_step"] % conf.log_every_num_steps
