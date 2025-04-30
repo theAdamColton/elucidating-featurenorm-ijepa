@@ -558,6 +558,7 @@ def main(conf: MainConfig = MainConfig()):
                 "training_state": training_state,
                 "model": model,
                 "optimizer": optimizer,
+                "lr_scheduler": lr_scheduler,
             },
             str(checkpoint_path),
         )
