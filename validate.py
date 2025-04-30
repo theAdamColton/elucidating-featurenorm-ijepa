@@ -1,4 +1,5 @@
 from typing import Literal
+import os
 import numpy as np
 import tempfile
 import zarr
@@ -12,7 +13,27 @@ from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
 
-from model import IJEPADepthSmart
+from src.model import IJEPADepthSmart
+
+
+class MultiDepthClassifier(nn.Module):
+    def __init__(self, num_depth, num_classes, num_features):
+        super().__init__()
+        self.weights = nn.Parameter(torch.empty(num_depth, num_classes, num_features))
+        nn.init.trunc_normal_(self.weights, std=0.02)
+        self.biases = nn.Parameter(torch.zeros(num_depth, num_classes))
+        self.num_depth = num_depth
+
+    def forward(self, emb, lab):
+        logits = einx.dot("b n d, n c d -> b n c", emb, self.weights)
+        logits = einx.add("b n c, n c", logits, self.biases)
+        preds = logits.argmax(-1)
+
+        logits = einx.rearrange("b n c -> (b n) c", logits)
+        lab = einx.rearrange("b -> (b n)", lab, n=self.num_depth)
+        loss = F.cross_entropy(logits, lab)
+
+        return preds, loss
 
 
 class SimplePatcher:
@@ -52,6 +73,7 @@ def validate(
     label_column_name: str = "cls",
     patch_size: int = 16,
     validation_image_size: int = 256,
+    num_classes: int = 1000,
     batch_size: int = 256,
     num_workers: int = 4,
     train_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar",
@@ -93,154 +115,137 @@ def validate(
     val_train_dataloader = _load_simple_dataloader(train_dataset_pattern)
     val_test_dataloader = _load_simple_dataloader(val_dataset_pattern)
 
-    def _embed_dataset(dl):
-        embedding_file = tempfile.NamedTemporaryFile("w+b", suffix=".zarr")
-        embedding_store = zarr.create_array(
-            embedding_file.name,
-            shape=(0, num_feature_depth, num_features),
-            dtype=np.float16,
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        def _embed_dataset(dl):
+            embedding_file_name = tempfile.mktemp(suffix=".zarr", dir=tmpdir)
+            embedding_store = zarr.create_array(
+                embedding_file_name,
+                shape=(0, num_feature_depth, num_features),
+                dtype=np.float16,
+            )
+
+            labels = []
+
+            for batch in tqdm(dl, desc="embedding val train dataset"):
+                patches = batch["patches"]
+                label = batch["label"]
+                token_ids = batch["token_ids"]
+
+                b, s, d = patches.shape
+
+                patches = patches.to(device=device, dtype=dtype)
+                patches = (patches / 255) * 2 - 1
+
+                token_ids = token_ids.to(device)
+
+                if model.config.depthsmart_mode == "disabled":
+                    # Full depth
+                    t = torch.full(
+                        (b, s),
+                        model.config.encoder.num_transformer_blocks,
+                        device=device,
+                    )
+
+                    with autocast_fn():
+                        with torch.inference_mode():
+                            _, layer_features = model.ema_encoder(
+                                patches, t, token_ids, return_all_layer_features=True
+                            )
+
+                    layer_features = einx.rearrange(
+                        "n b s d -> (n b) s d", layer_features
+                    )
+
+                elif model.config.depthsmart_mode == "random":
+                    # Repeat batch to condition on all depths
+                    t = torch.arange(num_feature_depth, device=device)
+                    t = einx.rearrange("n -> (n b) s", t, b=b, s=s)
+
+                    patches = einx.rearrange(
+                        "b s d -> (n b) s d", patches, n=num_feature_depth
+                    )
+
+                    token_ids = einx.rearrange(
+                        "b s nd -> (n b) s nd", token_ids, n=num_feature_depth
+                    )
+
+                    with autocast_fn():
+                        with torch.inference_mode():
+                            layer_features, *_ = model.ema_encoder(
+                                patches, t, token_ids
+                            )
+
+                layer_features = einx.mean("(n b) s d -> b n d", layer_features, b=b)
+                layer_features = layer_features.to(
+                    dtype=torch.float16, device="cpu"
+                ).numpy()
+
+                embedding_store.append(layer_features)
+                labels.append(label)
+
+                if test_mode:
+                    break
+
+            labels = torch.cat(labels, 0)
+
+            return embedding_store, labels
+
+        train_embedding_store, train_labels = _embed_dataset(val_train_dataloader)
+        test_embedding_store, test_labels = _embed_dataset(val_test_dataloader)
+
+        classifier = MultiDepthClassifier(
+            num_feature_depth, num_classes, num_features
+        ).to(device)
+
+        optim = torch.optim.AdamW(
+            classifier.parameters(),
+            lr=validation_probe_lr,
         )
 
-        labels = []
+        for val_epoch in tqdm(
+            range(validation_train_epochs), desc="training val classifier"
+        ):
+            rand_indices = torch.randperm(train_labels.shape[0])
 
-        for batch in tqdm(dl, desc="embedding val train dataset"):
-            patches = batch["patches"]
-            label = batch["label"]
-            token_ids = batch["token_ids"]
+            for indices_batch in rand_indices.split(validation_probe_batch_size):
 
-            b, s, d = patches.shape
+                emb = train_embedding_store[indices_batch.numpy()]
+                lab = train_labels[indices_batch]
 
-            patches = patches.to(device=device, dtype=dtype)
-            patches = (patches / 255) * 2 - 1
+                emb = torch.from_numpy(emb).to(device, torch.float32)
+                lab = lab.to(device)
 
-            token_ids = token_ids.to(device)
+                preds, loss = classifier(emb, lab)
 
-            if model.config.depthsmart_mode == "disabled":
-                # Full depth
-                t = torch.full(
-                    (b, s),
-                    model.config.encoder.num_transformer_blocks,
-                    device=device,
-                )
+                loss.backward()
+                optim.step()
+                optim.zero_grad()
 
-                with autocast_fn():
-                    with torch.inference_mode():
-                        _, layer_features = model.ema_encoder(
-                            patches, t, token_ids, return_all_layer_features=True
-                        )
-
-                layer_features = einx.rearrange("n b s d -> (n b) s d", layer_features)
-
-            elif model.config.depthsmart_mode == "random":
-                # Repeat batch to condition on all depths
-                t = torch.arange(num_feature_depth, device=device)
-                t = einx.rearrange("n -> (n b) s", t, b=b, s=s)
-
-                patches = einx.rearrange(
-                    "b s d -> (n b) s d", patches, n=num_feature_depth
-                )
-
-                token_ids = einx.rearrange(
-                    "b s nd -> (n b) s nd", token_ids, n=num_feature_depth
-                )
-
-                with autocast_fn():
-                    with torch.inference_mode():
-                        layer_features, *_ = model.ema_encoder(patches, t, token_ids)
-
-            layer_features = einx.mean("(n b) s d -> b n d", layer_features)
-            layer_features = layer_features.to(
-                dtype=torch.float16, device="cpu"
-            ).numpy()
-
-            embedding_store.append(layer_features)
-            labels.append(label)
+                if test_mode:
+                    break
 
             if test_mode:
                 break
 
-        labels = torch.cat(labels, 0)
+        preds = []
+        for indices_batch in tqdm(
+            torch.arange(test_labels.shape[0]).split(validation_probe_batch_size),
+            desc="testing probe",
+        ):
+            emb = test_embedding_store[indices_batch.numpy()]
+            lab = test_labels[indices_batch]
 
-        return embedding_file, embedding_store, labels
-
-    train_embedding_file, train_embedding_store, train_labels = _embed_dataset(
-        val_train_dataloader
-    )
-    test_embedding_file, test_embedding_store, test_labels = _embed_dataset(
-        val_test_dataloader
-    )
-
-    num_classes = int(train_labels.max()) + 1
-    classifier_weights = nn.Parameter(
-        torch.empty(num_feature_depth, num_classes, num_features)
-    ).to(device)
-    nn.init.trunc_normal_(classifier_weights, std=0.02)
-    classifier_biases = nn.Parameter(torch.zeros(num_feature_depth, num_classes)).to(
-        device
-    )
-
-    def run_classifier(emb, lab):
-        logits = einx.dot("b n d, n c d -> b n c", emb, classifier_weights)
-        logits = einx.add("b n c, n c", logits, classifier_biases)
-        preds = logits.argmax(-1)
-        loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), lab.view(-1))
-
-        return preds, loss
-
-    optim = torch.optim.AdamW(
-        (classifier_weights, classifier_biases),
-        lr=validation_probe_lr,
-    )
-
-    for val_epoch in tqdm(
-        range(validation_train_epochs), desc="training val classifier"
-    ):
-        rand_indices = torch.randperm(train_labels.shape[0])
-
-        for indices_batch in rand_indices.split(validation_probe_batch_size):
-
-            emb = train_embedding_store[indices_batch.numpy()]
-            lab = train_labels[indices_batch]
-
-            emb = torch.from_numpy(emb).to(device, dtype)
+            emb = torch.from_numpy(emb).to(device, torch.float32)
             lab = lab.to(device)
 
-            preds, loss = run_classifier(emb, lab)
+            with torch.inference_mode():
+                pred, loss = classifier(emb, lab)
 
-            loss.backward()
-            optim.step()
-            optim.zero_grad()
+            preds.append(pred.cpu())
 
-            if test_mode:
-                break
-
-        if test_mode:
-            break
-
-    preds = []
-    for indices_batch in tqdm(
-        torch.arange(test_labels.shape[0]).split(validation_probe_batch_size),
-        desc="testing probe",
-    ):
-        emb = test_embedding_store[indices_batch.numpy()]
-        lab = test_labels[indices_batch]
-
-        emb = torch.from_numpy(emb).to(device, dtype)
-        lab = lab.to(device)
-
-        with torch.inference_mode():
-            pred, loss = run_classifier(emb, lab)
-
-        preds.append(pred.cpu())
-
-    preds = torch.cat(preds, 0)
-    correct_labels = einx.equal("b n, b", preds, test_labels)
-    accuracies = einx.mean("[b] n", correct_labels.float())
-
-    del train_embedding_store
-    del test_embedding_store
-
-    train_embedding_file.close()
-    test_embedding_file.close()
+        preds = torch.cat(preds, 0)
+        correct_labels = einx.equal("b n, b", preds, test_labels)
+        accuracies = einx.mean("[b] n", correct_labels.float())
 
     return accuracies

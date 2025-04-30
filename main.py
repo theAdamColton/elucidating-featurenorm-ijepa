@@ -197,6 +197,7 @@ class MainConfig:
     val_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-validation-{00..63}.tar"
     image_column_name: str = "jpg"
     label_column_name: str = "cls"
+    num_classes: int = 1000
 
     patcher: ContextTargetPatcherConfig = field(
         default_factory=lambda: ContextTargetPatcherConfig()
@@ -337,6 +338,7 @@ def main(conf: MainConfig = MainConfig()):
             model=model,
             image_column_name=conf.image_column_name,
             label_column_name=conf.label_column_name,
+            num_classes=conf.num_classes,
             patch_size=patch_size,
             validation_image_size=conf.validation_image_size,
             batch_size=conf.batch_size,
@@ -501,6 +503,7 @@ def main(conf: MainConfig = MainConfig()):
                     model=model,
                     image_column_name=conf.image_column_name,
                     label_column_name=conf.label_column_name,
+                    num_classes=conf.num_classes,
                     patch_size=patch_size,
                     validation_image_size=conf.validation_image_size,
                     batch_size=conf.batch_size,
