@@ -197,10 +197,10 @@ class TrainConfig:
     batch_size: int = 256
     packer_batch_size: int = 16
     num_workers: int = 0
-    seed: int = 42
+    seed: int = 69
     num_warmup_steps: int = 5000
     lr: float = 5e-4
-    num_epochs: int = 10
+    num_epochs: int = 100
 
     log_every_num_steps: int = 50
     validate_every_num_epochs: int = 5
@@ -425,6 +425,7 @@ def main(conf: TrainConfig = TrainConfig()):
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
                     )
+                    interp = 0
 
                     should_log = (
                         training_state["global_step"] % conf.log_every_num_steps
@@ -525,7 +526,7 @@ def main(conf: TrainConfig = TrainConfig()):
 
                         with autocast_fn():
                             with torch.inference_mode():
-                                emb, *_ = model.encoder(patches, t, token_ids)
+                                emb, *_ = model.ema_encoder(patches, t, token_ids)
 
                         emb = emb.mean(1).cpu().float()
 
