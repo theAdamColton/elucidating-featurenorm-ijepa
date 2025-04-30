@@ -1,8 +1,7 @@
-from typing import Literal
-import os
 import numpy as np
+from glob import glob
+import uuid
 import tempfile
-import zarr
 import torch
 import einx
 from contextlib import contextmanager
@@ -101,6 +100,7 @@ def validate(
     def _load_simple_dataloader(pattern):
         ds = (
             wds.WebDataset(pattern)
+            .shuffle(1000)
             .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
             .rename(
                 pixel_values=image_column_name,
@@ -108,6 +108,7 @@ def validate(
             )
             .map(SimplePatcher(validation_image_size, patch_size))
             .batched(batch_size)
+            .shuffle(16)
         )
         dl = DataLoader(ds, batch_size=None, num_workers=num_workers)
         return dl
@@ -115,84 +116,86 @@ def validate(
     val_train_dataloader = _load_simple_dataloader(train_dataset_pattern)
     val_test_dataloader = _load_simple_dataloader(val_dataset_pattern)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(dir=".") as tmpdir:
 
-        def _embed_dataset(dl):
-            embedding_file_name = tempfile.mktemp(suffix=".zarr", dir=tmpdir)
-            embedding_store = zarr.create_array(
-                embedding_file_name,
-                shape=(0, num_feature_depth, num_features),
-                dtype=np.float16,
-            )
+        def _embed_dataset(dl, prefix="train-"):
+            with wds.ShardWriter(f"{tmpdir}/{prefix}%04d.tar") as writer:
+                pass
 
-            labels = []
+                for batch in tqdm(dl, desc="embedding val train dataset"):
+                    patches = batch["patches"]
+                    label = batch["label"]
+                    token_ids = batch["token_ids"]
 
-            for batch in tqdm(dl, desc="embedding val train dataset"):
-                patches = batch["patches"]
-                label = batch["label"]
-                token_ids = batch["token_ids"]
+                    b, s, d = patches.shape
 
-                b, s, d = patches.shape
+                    patches = patches.to(device=device, dtype=dtype)
+                    patches = (patches / 255) * 2 - 1
 
-                patches = patches.to(device=device, dtype=dtype)
-                patches = (patches / 255) * 2 - 1
+                    token_ids = token_ids.to(device)
 
-                token_ids = token_ids.to(device)
+                    if model.config.depthsmart_mode == "disabled":
+                        # Full depth
+                        t = torch.full(
+                            (b, s),
+                            model.config.encoder.num_transformer_blocks,
+                            device=device,
+                        )
 
-                if model.config.depthsmart_mode == "disabled":
-                    # Full depth
-                    t = torch.full(
-                        (b, s),
-                        model.config.encoder.num_transformer_blocks,
-                        device=device,
+                        with autocast_fn():
+                            with torch.inference_mode():
+                                _, layer_features = model.ema_encoder(
+                                    patches,
+                                    t,
+                                    token_ids,
+                                    return_all_layer_features=True,
+                                )
+
+                        layer_features = einx.rearrange(
+                            "n b s d -> (n b) s d", layer_features
+                        )
+
+                    elif model.config.depthsmart_mode == "random":
+                        # Repeat batch to condition on all depths
+                        t = torch.arange(num_feature_depth, device=device)
+                        t = einx.rearrange("n -> (n b) s", t, b=b, s=s)
+
+                        patches = einx.rearrange(
+                            "b s d -> (n b) s d", patches, n=num_feature_depth
+                        )
+
+                        token_ids = einx.rearrange(
+                            "b s nd -> (n b) s nd", token_ids, n=num_feature_depth
+                        )
+
+                        with autocast_fn():
+                            with torch.inference_mode():
+                                layer_features, *_ = model.ema_encoder(
+                                    patches, t, token_ids
+                                )
+
+                    layer_features = einx.mean(
+                        "(n b) s d -> b n d", layer_features, b=b
                     )
+                    layer_features = layer_features.cpu()
 
-                    with autocast_fn():
-                        with torch.inference_mode():
-                            _, layer_features = model.ema_encoder(
-                                patches, t, token_ids, return_all_layer_features=True
-                            )
+                    for i in range(len(layer_features)):
+                        writer.write(
+                            {
+                                "__key__": uuid.uuid4().hex,
+                                "label.cls": label[i].item(),
+                                "features.pth": layer_features[i],
+                            }
+                        )
 
-                    layer_features = einx.rearrange(
-                        "n b s d -> (n b) s d", layer_features
-                    )
+                    if test_mode:
+                        break
 
-                elif model.config.depthsmart_mode == "random":
-                    # Repeat batch to condition on all depths
-                    t = torch.arange(num_feature_depth, device=device)
-                    t = einx.rearrange("n -> (n b) s", t, b=b, s=s)
+                urls = list(glob(f"{tmpdir}/{prefix}*.tar"))
+                return urls
 
-                    patches = einx.rearrange(
-                        "b s d -> (n b) s d", patches, n=num_feature_depth
-                    )
-
-                    token_ids = einx.rearrange(
-                        "b s nd -> (n b) s nd", token_ids, n=num_feature_depth
-                    )
-
-                    with autocast_fn():
-                        with torch.inference_mode():
-                            layer_features, *_ = model.ema_encoder(
-                                patches, t, token_ids
-                            )
-
-                layer_features = einx.mean("(n b) s d -> b n d", layer_features, b=b)
-                layer_features = layer_features.to(
-                    dtype=torch.float16, device="cpu"
-                ).numpy()
-
-                embedding_store.append(layer_features)
-                labels.append(label)
-
-                if test_mode:
-                    break
-
-            labels = torch.cat(labels, 0)
-
-            return embedding_store, labels
-
-        train_embedding_store, train_labels = _embed_dataset(val_train_dataloader)
-        test_embedding_store, test_labels = _embed_dataset(val_test_dataloader)
+        train_tar_urls = _embed_dataset(val_train_dataloader, "train-")
+        test_tar_urls = _embed_dataset(val_test_dataloader, "test-")
 
         classifier = MultiDepthClassifier(
             num_feature_depth, num_classes, num_features
@@ -203,17 +206,24 @@ def validate(
             lr=validation_probe_lr,
         )
 
+        train_dataset = (
+            wds.WebDataset(train_tar_urls)
+            .shuffle(1000)
+            .decode()
+            .batched(batch_size)
+            .shuffle(16)
+        )
+        train_dataloader = DataLoader(
+            train_dataset, num_workers=num_workers, batch_size=None
+        )
+
         for val_epoch in tqdm(
             range(validation_train_epochs), desc="training val classifier"
         ):
-            rand_indices = torch.randperm(train_labels.shape[0])
+            for batch in train_dataloader:
+                emb, lab = batch.pop("features.pth"), batch.pop("label.cls")
 
-            for indices_batch in rand_indices.split(validation_probe_batch_size):
-
-                emb = train_embedding_store[indices_batch.numpy()]
-                lab = train_labels[indices_batch]
-
-                emb = torch.from_numpy(emb).to(device, torch.float32)
+                emb = emb.to(device, torch.float32)
                 lab = lab.to(device)
 
                 preds, loss = classifier(emb, lab)
@@ -228,24 +238,37 @@ def validate(
             if test_mode:
                 break
 
+        test_dataset = (
+            wds.WebDataset(test_tar_urls)
+            .shuffle(1000)
+            .decode()
+            .batched(batch_size)
+            .shuffle(16)
+        )
+        test_dataloader = DataLoader(
+            test_dataset, num_workers=num_workers, batch_size=None
+        )
+
         preds = []
-        for indices_batch in tqdm(
-            torch.arange(test_labels.shape[0]).split(validation_probe_batch_size),
+        labs = []
+        for batch in tqdm(
+            test_dataloader,
             desc="testing probe",
         ):
-            emb = test_embedding_store[indices_batch.numpy()]
-            lab = test_labels[indices_batch]
+            emb, lab = batch.pop("features.pth"), batch.pop("label.cls")
 
-            emb = torch.from_numpy(emb).to(device, torch.float32)
+            emb = emb.to(device, torch.float32)
             lab = lab.to(device)
 
             with torch.inference_mode():
                 pred, loss = classifier(emb, lab)
 
             preds.append(pred.cpu())
+            labs.append(lab.cpu())
 
         preds = torch.cat(preds, 0)
-        correct_labels = einx.equal("b n, b", preds, test_labels)
+        labs = torch.cat(labs, 0)
+        correct_labels = einx.equal("b n, b", preds, labs)
         accuracies = einx.mean("[b] n", correct_labels.float())
 
     return accuracies
