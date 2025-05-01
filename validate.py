@@ -37,18 +37,15 @@ class MultiDepthClassifier(nn.Module):
 
 class SimplePatcher:
     def __init__(self, size=256, patch_size=16):
-        self.resize = torchvision.transforms.Compose(
-            [
-                torchvision.transforms.Resize(size),
-                torchvision.transforms.CenterCrop(size),
-            ]
-        )
         self.size = size
         self.patch_size = patch_size
 
     def __call__(self, row):
         x = row.pop("pixel_values")
-        x = self.resize(x)
+        _, og_h, og_w = x.shape
+        crop_size = min(og_h, og_w)
+        x = torchvision.transforms.CenterCrop(crop_size)(x)
+        x = torchvision.transforms.Resize((self.size, self.size))(x)
         x = einx.rearrange("c (np ps)... -> (np...) (ps... c)", x, ps=self.patch_size)
         position_ids = torch.meshgrid(
             (
@@ -58,7 +55,7 @@ class SimplePatcher:
             indexing="ij",
         )
         position_ids = torch.stack(position_ids, -1)
-        position_ids = einx.rearrange("np... nd -> (np...) nd", position_ids)
+        position_ids = einx.rearrange("s... nd -> (s...) nd", position_ids)
         sequence_ids = torch.full((x.shape[0],), 0)
         token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
         row["patches"] = x
@@ -122,7 +119,7 @@ def validate(
             with wds.ShardWriter(f"{tmpdir}/{prefix}%04d.tar") as writer:
                 pass
 
-                for batch in tqdm(dl, desc="embedding val train dataset"):
+                for batch in tqdm(dl, desc="embedding val dataset"):
                     patches = batch["patches"]
                     label = batch["label"]
                     token_ids = batch["token_ids"]
@@ -207,7 +204,7 @@ def validate(
         )
 
         train_dataset = (
-            wds.WebDataset(train_tar_urls)
+            wds.WebDataset(train_tar_urls, empty_check=False)
             .shuffle(1000)
             .decode()
             .batched(validation_probe_batch_size)
@@ -239,11 +236,9 @@ def validate(
                 break
 
         test_dataset = (
-            wds.WebDataset(test_tar_urls)
-            .shuffle(1000)
+            wds.WebDataset(test_tar_urls, empty_check=False)
             .decode()
             .batched(validation_probe_batch_size)
-            .shuffle(16)
         )
         test_dataloader = DataLoader(
             test_dataset, num_workers=num_workers, batch_size=None
