@@ -204,14 +204,12 @@ def validate(
         )
 
         train_dataset = (
-            wds.WebDataset(train_tar_urls, empty_check=False)
-            .shuffle(1000)
-            .decode()
-            .batched(validation_probe_batch_size)
-            .shuffle(16)
+            wds.WebDataset(train_tar_urls, empty_check=False).shuffle(1000).decode()
         )
         train_dataloader = DataLoader(
-            train_dataset, num_workers=num_workers, batch_size=None
+            train_dataset,
+            num_workers=num_workers,
+            batch_size=validation_probe_batch_size,
         )
 
         for val_epoch in tqdm(
