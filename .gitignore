@@ -1,4 +1,5 @@
 viz-outputs/
+tmp*/
 checkpoints/
 wandb/
 

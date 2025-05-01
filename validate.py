@@ -177,14 +177,14 @@ def validate(
                     layer_features = einx.mean(
                         "(n b) s d -> b n d", layer_features, b=b
                     )
-                    layer_features = layer_features.cpu()
+                    layer_features = layer_features.cpu().to(torch.float16).numpy()
 
-                    for i in range(len(layer_features)):
+                    for i in range(b):
                         writer.write(
                             {
                                 "__key__": uuid.uuid4().hex,
                                 "label.cls": label[i].item(),
-                                "features.pth": layer_features[i],
+                                "features.npy": layer_features[i],
                             }
                         )
 
@@ -210,7 +210,7 @@ def validate(
             wds.WebDataset(train_tar_urls)
             .shuffle(1000)
             .decode()
-            .batched(batch_size)
+            .batched(validation_probe_batch_size)
             .shuffle(16)
         )
         train_dataloader = DataLoader(
@@ -221,7 +221,7 @@ def validate(
             range(validation_train_epochs), desc="training val classifier"
         ):
             for batch in train_dataloader:
-                emb, lab = batch.pop("features.pth"), batch.pop("label.cls")
+                emb, lab = batch.pop("features.npy"), batch.pop("label.cls")
 
                 emb = emb.to(device, torch.float32)
                 lab = lab.to(device)
@@ -242,7 +242,7 @@ def validate(
             wds.WebDataset(test_tar_urls)
             .shuffle(1000)
             .decode()
-            .batched(batch_size)
+            .batched(validation_probe_batch_size)
             .shuffle(16)
         )
         test_dataloader = DataLoader(
@@ -255,7 +255,7 @@ def validate(
             test_dataloader,
             desc="testing probe",
         ):
-            emb, lab = batch.pop("features.pth"), batch.pop("label.cls")
+            emb, lab = batch.pop("features.npy"), batch.pop("label.cls")
 
             emb = emb.to(device, torch.float32)
             lab = lab.to(device)
