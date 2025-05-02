@@ -177,7 +177,7 @@ class MainConfig:
     num_epochs: int = 100
 
     log_every_num_steps: int = 50
-    validate_every_num_epochs: int = 5
+    validate_every_num_epochs: int = 10
 
     validation_probe_lr: float = 1e-3
     validation_image_size: int = 256

@@ -148,32 +148,26 @@ def validate(
                                     return_all_layer_features=True,
                                 )
 
-                        layer_features = einx.rearrange(
-                            "n b s d -> (n b) s d", layer_features
-                        )
+                        layer_features = einx.mean("n b s d -> b n d", layer_features)
 
                     elif model.config.depthsmart_mode == "random":
-                        # Repeat batch to condition on all depths
-                        t = torch.arange(num_feature_depth, device=device)
-                        t = einx.rearrange("n -> (n b) s", t, b=b, s=s)
+                        # Repeating batch to condition on all depths
+                        # results in OOM!
+                        #
+                        layer_features = []
+                        for layer_id in range(num_feature_depth):
+                            t = torch.full((b, s), layer_id, device=device)
 
-                        patches = einx.rearrange(
-                            "b s d -> (n b) s d", patches, n=num_feature_depth
-                        )
+                            with autocast_fn():
+                                with torch.inference_mode():
+                                    features, *_ = model.ema_encoder(
+                                        patches, t, token_ids
+                                    )
+                            features = einx.mean("b [s] d", features)
+                            layer_features.append(features)
 
-                        token_ids = einx.rearrange(
-                            "b s nd -> (n b) s nd", token_ids, n=num_feature_depth
-                        )
+                        layer_features = torch.stack(layer_features, 1)
 
-                        with autocast_fn():
-                            with torch.inference_mode():
-                                layer_features, *_ = model.ema_encoder(
-                                    patches, t, token_ids
-                                )
-
-                    layer_features = einx.mean(
-                        "(n b) s d -> b n d", layer_features, b=b
-                    )
                     layer_features = layer_features.cpu().to(torch.float16).numpy()
 
                     for i in range(b):
