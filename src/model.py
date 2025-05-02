@@ -181,7 +181,7 @@ class Encoder(nn.Module):
             for _ in range(config.num_transformer_blocks)
         )
 
-        self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
+        self.norm_out = nn.LayerNorm(self.hidden_size)
 
     def forward(
         self,
@@ -345,7 +345,6 @@ class IJEPADepthSmartConfig:
     predictor_target_capacity: float = 0.125
 
     should_tie_predictor_temb: bool = True
-    should_tie_predictor_norm_out: bool = True
 
 
 class IJEPADepthSmart(nn.Module):
@@ -362,9 +361,6 @@ class IJEPADepthSmart(nn.Module):
 
         if config.should_tie_predictor_temb:
             self.predictor.temb = self.encoder.temb
-
-        if config.should_tie_predictor_norm_out:
-            self.predictor.norm_out = self.encoder.norm_out
 
     def forward(
         self, x, y, x_token_ids, y_token_ids, interp=0, return_smooth_rank=False

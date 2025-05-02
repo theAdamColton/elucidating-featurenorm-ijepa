@@ -33,5 +33,4 @@ conf:
           num_attention_heads: 6
     predictor_batch_repeat: 4
     depthsmart_mode: random
-    validation_depthsmart_mode: extract-layers
   mode: train

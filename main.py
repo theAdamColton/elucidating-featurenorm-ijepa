@@ -183,9 +183,7 @@ class MainConfig:
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_probe_batch_size: int = 2048
-    validation_depthsmart_mode: Literal["learned", "extract-layers"] = (
-        "extract-layers",
-    )
+    validation_depthsmart_mode: Literal["learned", "extract-layers"] = "extract-layers"
 
     test_mode: bool = False
 
@@ -426,7 +424,6 @@ def main(conf: MainConfig = MainConfig()):
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
                     )
-                    interp = 0
 
                     ema_beta = (
                         min(
