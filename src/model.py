@@ -124,6 +124,13 @@ class RopePosEmbedND(nn.Module):
 
 
 class AdaLayerNormShiftScale(nn.Module):
+    """
+    adaptive standardization and rescaling
+    normalization (ASR-Norm)
+
+    https://arxiv.org/pdf/2106.01899
+    """
+
     def __init__(
         self,
         hidden_size,
@@ -375,12 +382,12 @@ class IJEPADepthSmart(nn.Module):
 
         b, ys, d = y.shape
 
+        num_feature_depth = config.encoder.num_transformer_blocks + 1
+
         if config.depthsmart_mode == "random":
-            t = torch.randint(
-                0, config.encoder.num_transformer_blocks + 1, (b,), device=device
-            )
+            t = torch.randint(0, num_feature_depth, (b,), device=device)
         elif config.depthsmart_mode == "disabled":
-            t = torch.full((b,), config.encoder.num_transformer_blocks, device=device)
+            t = torch.full((b,), num_feature_depth - 1, device=device)
         else:
             raise ValueError(config.depthsmart_mode)
 

@@ -135,7 +135,7 @@ def validate(
                         # Full depth
                         t = torch.full(
                             (b, s),
-                            model.config.encoder.num_transformer_blocks,
+                            num_feature_depth - 1,
                             device=device,
                         )
 
