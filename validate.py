@@ -1,3 +1,4 @@
+from typing import Literal
 import numpy as np
 from glob import glob
 import uuid
@@ -80,6 +81,7 @@ def validate(
     validation_probe_lr: float = 1e-3,
     validation_probe_batch_size: int = 2048,
     validation_train_epochs: int = 50,
+    validation_depthsmart_mode: Literal["learned", "extract-layers"] = "extract-layers",
 ):
     encoder = model.ema_encoder
     num_features = encoder.hidden_size
@@ -131,7 +133,7 @@ def validate(
 
                     token_ids = token_ids.to(device)
 
-                    if model.config.depthsmart_mode == "disabled":
+                    if validation_depthsmart_mode == "extract-layers":
                         # Full depth
                         t = torch.full(
                             (b, s),
@@ -150,7 +152,7 @@ def validate(
 
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 
-                    elif model.config.depthsmart_mode == "random":
+                    elif validation_depthsmart_mode == "learned":
                         # Repeating batch to condition on all depths
                         # results in OOM!
                         #

@@ -139,7 +139,7 @@ class AdaLayerNormShiftScale(nn.Module):
         super().__init__()
         self.silu = nn.SiLU()
         self.linear = nn.Linear(cond_size, hidden_size * 2)
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False)
 
     def forward(self, x, emb):
         emb = self.linear(self.silu(emb))
@@ -242,17 +242,14 @@ class Encoder(nn.Module):
         for i, block in enumerate(self.blocks):
             x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
-            is_last_block = i + 1 == len(self.blocks)
-
-            if is_last_block:
-                x = self.norm_out(x, temb)
-
             if return_target_hidden_states:
                 mask = t == (i + 1)
                 target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
 
             elif return_all_layer_features:
                 all_layer_features[i + 1] = x
+
+        x = self.norm_out(x)
 
         if return_target_hidden_states:
             return x, target_hidden_states

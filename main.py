@@ -183,6 +183,9 @@ class MainConfig:
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_probe_batch_size: int = 2048
+    validation_depthsmart_mode: Literal["learned", "extract-layers"] = (
+        "extract-layers",
+    )
 
     test_mode: bool = False
 
@@ -351,6 +354,7 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_lr=conf.validation_probe_lr,
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
+            validation_depthsmart_mode=conf.validation_depthsmart_mode,
         )
         print("ACCURACIES", accuracies)
 
@@ -516,6 +520,7 @@ def main(conf: MainConfig = MainConfig()):
                     validation_probe_lr=conf.validation_probe_lr,
                     validation_probe_batch_size=conf.validation_probe_batch_size,
                     validation_train_epochs=conf.validation_train_epochs,
+                    validation_depthsmart_mode=conf.validation_depthsmart_mode,
                 )
 
                 gc.collect()
