@@ -161,6 +161,7 @@ class EncoderConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
+    norm_out_mode: Literal["disabled", "layernorm"] = "layernorm"
 
 
 class Encoder(nn.Module):
@@ -181,7 +182,12 @@ class Encoder(nn.Module):
             for _ in range(config.num_transformer_blocks)
         )
 
-        self.norm_out = nn.LayerNorm(self.hidden_size)
+        if config.norm_out_mode == "layernorm":
+            self.norm_out = nn.LayerNorm(self.hidden_size)
+        elif config.norm_out_mode == "disabled":
+            self.norm_out = nn.Identity()
+        else:
+            raise ValueError(config.norm_out_mode)
 
     def forward(
         self,

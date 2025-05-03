@@ -20,6 +20,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
+      norm_out_mode: disabled
     predictor:
       input_size: 384
       num_transformer_blocks: 4
@@ -33,5 +34,5 @@ conf:
           num_attention_heads: 6
     predictor_batch_repeat: 4
     depthsmart_mode: random
-    target_norm_mode: disabled
+    target_norm_mode: batchnorm
   mode: train
