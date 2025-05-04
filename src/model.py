@@ -533,9 +533,9 @@ class IJEPADepthSmart(nn.Module):
                 target_hidden_states, (target_hidden_states.shape[-1],)
             )
         elif config.target_norm_mode == "batchnorm":
-            mask = y_token_ids != MASK_SEQUENCE_ID
+            mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
             mean = einx.mean("[n] d", target_hidden_states[mask])
-            std = einx.mean("[n] d", target_hidden_states)
+            std = einx.std("[n] d", target_hidden_states[mask])
             target_hidden_states = einx.subtract("b s d, d", target_hidden_states, mean)
             eps = 1e-7
             target_hidden_states = einx.divide(
