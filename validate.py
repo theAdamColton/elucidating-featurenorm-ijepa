@@ -102,6 +102,7 @@ def validate(
     validation_probe_batch_size: int = 2048,
     validation_train_epochs: int = 50,
     validation_depthsmart_mode: Literal["learned", "extract-layers"] = "extract-layers",
+    num_tokens_per_register_token: int = 32,
 ):
     encoder = model.ema_encoder
     num_features = encoder.hidden_size
@@ -125,7 +126,11 @@ def validate(
                 pixel_values=image_column_name,
                 label=label_column_name,
             )
-            .map(SimplePatcher(validation_image_size, patch_size))
+            .map(
+                SimplePatcher(
+                    validation_image_size, patch_size, num_tokens_per_register_token
+                )
+            )
             .batched(batch_size)
             .shuffle(16)
         )

@@ -418,6 +418,7 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
             validation_depthsmart_mode=conf.validation_depthsmart_mode,
+            num_tokens_per_register_token=conf.patcher.num_tokens_per_register_token,
         )
         print("ACCURACIES", accuracies)
 
@@ -583,6 +584,7 @@ def main(conf: MainConfig = MainConfig()):
                     validation_probe_batch_size=conf.validation_probe_batch_size,
                     validation_train_epochs=conf.validation_train_epochs,
                     validation_depthsmart_mode=conf.validation_depthsmart_mode,
+                    num_tokens_per_register_token=conf.patcher.num_tokens_per_register_token,
                 )
 
                 gc.collect()
