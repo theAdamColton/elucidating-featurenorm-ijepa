@@ -247,7 +247,7 @@ class MainConfig:
     num_image_channels: int = 3
 
     ema_beta: float = 0.996
-    ema_beta_start: float = 0.5
+    ema_beta_start: float = 0.95
     ema_beta_warmup_steps: int = 1000
 
     interp_warmup_steps: int = 100000
