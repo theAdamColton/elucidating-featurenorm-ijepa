@@ -2,7 +2,7 @@ conf:
   should_compile: true
   dtype: bfloat16
   device: cuda
-  batch_size: 512
+  batch_size: 256
   num_workers: 4
   lr: 1e-3
   interp_warmup_steps: 10000
@@ -20,7 +20,7 @@ conf:
           embed_dim: 64
           head_dim: 64
           num_attention_heads: 1
-      norm_out_mode: disabled
+      norm_out_mode: layernorm
     predictor:
       input_size: 64
       num_transformer_blocks: 1
@@ -34,6 +34,6 @@ conf:
           num_attention_heads: 1
     predictor_batch_repeat: 8
     depthsmart_mode: disabled
-    target_norm_mode: batchnorm
+    target_norm_mode: layernorm
   mode: train
   validate_every_num_epochs: 20

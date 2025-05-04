@@ -32,6 +32,8 @@ class ContextTargetPatcherConfig:
     min_side_length: int = 64
     max_num_context_tokens: int = 128
 
+    num_tokens_per_register_token: int = 32
+
     def __post_init__(self):
         assert self.max_side_length % self.patch_size == 0
         assert self.min_side_length % self.patch_size == 0
@@ -119,7 +121,12 @@ class ContextTargetPatcher(nn.Module):
 
         nw, ws, d = x.shape
 
-        max_num_ctx_windows = config.max_num_context_tokens // ws
+        max_num_register_tokens = (
+            config.max_num_context_tokens // config.num_tokens_per_register_token
+        )
+        max_num_ctx_windows = (
+            config.max_num_context_tokens - max_num_register_tokens
+        ) // ws
         max_num_ctx_windows = min(nw - 1, max_num_ctx_windows)
 
         if nw <= 2:
@@ -147,6 +154,46 @@ class ContextTargetPatcher(nn.Module):
         target = target.reshape(-1, target.shape[-1])
         target_position_ids = target_position_ids.reshape(
             -1, target_position_ids.shape[-1]
+        )
+
+        num_ctx_register_tokens = int(
+            round(ctx.shape[0] / config.num_tokens_per_register_token)
+        )
+        num_ctx_register_tokens = max(num_ctx_register_tokens, 1)
+        ctx = torch.cat((torch.zeros(1, d, dtype=ctx.dtype), ctx))
+        ctx_position_ids = torch.cat(
+            (
+                torch.zeros(1, target_position_ids.shape[-1], dtype=torch.long),
+                ctx_position_ids,
+            )
+        )
+        ctx_register_ids = torch.full((ctx_position_ids.shape[0],), MASK_SEQUENCE_ID)
+        ctx_register_ids[:num_ctx_register_tokens] = torch.arange(
+            num_ctx_register_tokens
+        )
+        ctx_position_ids = torch.cat(
+            (ctx_register_ids.unsqueeze(-1), ctx_position_ids), -1
+        )
+
+        num_target_register_tokens = int(
+            round(ctx.shape[0] / config.num_tokens_per_register_token)
+        )
+        num_target_register_tokens = max(num_target_register_tokens, 1)
+        target = torch.cat((torch.zeros(1, d, dtype=target.dtype), target))
+        target_position_ids = torch.cat(
+            (
+                torch.zeros(1, target_position_ids.shape[-1], dtype=torch.long),
+                target_position_ids,
+            )
+        )
+        target_register_ids = torch.full(
+            (target_position_ids.shape[0],), MASK_SEQUENCE_ID
+        )
+        target_register_ids[:num_target_register_tokens] = torch.arange(
+            num_target_register_tokens
+        )
+        target_position_ids = torch.cat(
+            (target_register_ids.unsqueeze(-1), target_position_ids), -1
         )
 
         row["x_patches"] = tensorset.TensorSet(
@@ -230,7 +277,12 @@ def main(conf: MainConfig = MainConfig()):
     max_patch_side_length = conf.patcher.max_side_length // patch_size
     max_sequence_length = max_patch_side_length**2
 
-    pad_value_dict = {"position_ids": 0, "patches": 0, "sequence_ids": MASK_SEQUENCE_ID}
+    pad_value_dict = {
+        "position_ids": 0,
+        "patches": 0,
+        "sequence_ids": MASK_SEQUENCE_ID,
+        "register_ids": MASK_SEQUENCE_ID,
+    }
 
     dataset = (
         cabbage_patch.CabbageDataset(
@@ -287,8 +339,8 @@ def main(conf: MainConfig = MainConfig()):
 
                 device = x_seq["patches"].device
 
-                x_sample_mask = x_seq["sequence_ids"] == j
-                y_sample_mask = y_seq["sequence_ids"] == j
+                x_sample_mask = x_seq["sequence_ids"] == j & ~x_seq["is_register"]
+                y_sample_mask = y_seq["sequence_ids"] == j & ~y_seq["is_register"]
 
                 x_sample = x_seq.iloc[x_sample_mask]
                 y_sample = y_seq.iloc[y_sample_mask]
@@ -296,8 +348,11 @@ def main(conf: MainConfig = MainConfig()):
                 assert x_sample.size(0) > 0
                 assert y_sample.size(0) > 0
 
+                x_sample_position_ids = x_sample["position_ids"][-2:]
+                y_sample_position_ids = y_sample["position_ids"][-2:]
+
                 all_position_ids = torch.cat(
-                    (x_sample["position_ids"], y_sample["position_ids"]), 0
+                    (x_sample_position_ids, y_sample_position_ids), 0
                 )
 
                 min_ph_pw = all_position_ids.amin(0)
@@ -312,13 +367,13 @@ def main(conf: MainConfig = MainConfig()):
                 for k in range(y_sample.size(0)):
                     token = y_sample.iloc[k]
                     patch = token["patches"]
-                    hid, wid = token["position_ids"] - min_ph_pw
+                    *_, hid, wid = token["position_ids"] - min_ph_pw
                     image[hid, wid] = patch
 
                 for k in range(x_sample.size(0)):
                     token = x_sample.iloc[k]
                     patch = token["patches"]
-                    hid, wid = token["position_ids"] - min_ph_pw
+                    *_, hid, wid = token["position_ids"] - min_ph_pw
                     image[hid, wid] = patch
 
                 image = einx.rearrange(

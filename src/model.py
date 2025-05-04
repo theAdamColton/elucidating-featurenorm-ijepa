@@ -1,7 +1,6 @@
 import math
 from typing import Literal
 import torch
-from torch.nn.attention.flex_attention import create_block_mask
 from torch import nn
 from torch.nn import init
 import torch.nn.functional as F
@@ -161,6 +160,7 @@ class EncoderConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
+    max_num_register_tokens: int = 64
     norm_out_mode: Literal["disabled", "layernorm"] = "layernorm"
 
 
@@ -175,7 +175,23 @@ class Encoder(nn.Module):
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
         self.temb = TimestepEmbedder(self.hidden_size)
 
-        self.pos_emb = RopePosEmbedND(axes_dim=(self.head_dim // 2, self.head_dim // 2))
+        self.reg_emb = nn.Parameter(
+            torch.empty(config.max_num_register_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.reg_emb, std=0.02)
+
+        self.h_emb = nn.Parameter(
+            torch.empty(config.max_num_height_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.h_emb, std=0.02)
+        self.w_emb = nn.Parameter(
+            torch.empty(config.max_num_width_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.w_emb, std=0.02)
+
+        self.rope_pos_emb = RopePosEmbedND(
+            axes_dim=(self.head_dim // 2, self.head_dim // 2)
+        )
 
         self.blocks = nn.ModuleList(
             TransformerBlock(config.block_config)
@@ -191,9 +207,9 @@ class Encoder(nn.Module):
 
     def forward(
         self,
-        x,
-        t,
-        token_ids,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        token_ids: torch.Tensor,
         return_target_hidden_states=False,
         return_all_layer_features=False,
     ):
@@ -203,7 +219,7 @@ class Encoder(nn.Module):
 
         assert einx.matches("b s d", x, d=config.input_size)
         assert einx.matches("b s", t, b=b, s=s)
-        assert einx.matches("b s three", token_ids, b=b, s=s, three=3)
+        assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         assert not (return_target_hidden_states and return_all_layer_features)
 
@@ -211,9 +227,22 @@ class Encoder(nn.Module):
 
         x = self.proj_in(x)
 
-        sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
+        sample_ids, register_ids, position_ids = (
+            token_ids[..., 0],
+            token_ids[..., 1],
+            token_ids[..., 2:],
+        )
 
-        rotary_embeds = self.pos_emb(position_ids)
+        is_register = register_ids != MASK_SEQUENCE_ID
+        register_ids.masked_fill_(~is_register, 0)
+        reg_emb = self.reg_emb[register_ids]
+        reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
+        x = x + reg_emb
+
+        rotary_embeds = self.rope_pos_emb(position_ids)
+
+        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
+        x = x + pos_emb
 
         attn_mask = einx.equal(
             "b s1, b s2 -> b h s1 s2",
@@ -277,6 +306,7 @@ class PredictorConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
+    max_num_register_tokens: int = 64
 
 
 class Predictor(nn.Module):
@@ -290,8 +320,22 @@ class Predictor(nn.Module):
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
         self.temb = TimestepEmbedder(self.hidden_size)
 
-        self.p_emb = nn.Parameter(torch.empty(self.hidden_size))
-        init.trunc_normal_(self.p_emb, std=0.02)
+        self.reg_emb = nn.Parameter(
+            torch.empty(config.max_num_register_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.reg_emb, std=0.02)
+
+        self.h_emb = nn.Parameter(
+            torch.empty(config.max_num_height_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.h_emb, std=0.02)
+        self.w_emb = nn.Parameter(
+            torch.empty(config.max_num_width_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.w_emb, std=0.02)
+
+        self.pred_emb = nn.Parameter(torch.empty(self.hidden_size))
+        init.trunc_normal_(self.pred_emb, std=0.02)
 
         self.pos_emb = RopePosEmbedND(axes_dim=(self.head_dim // 2, self.head_dim // 2))
 
@@ -303,19 +347,44 @@ class Predictor(nn.Module):
         self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
         self.proj_out = nn.Linear(self.hidden_size, config.input_size)
 
-    def forward(self, x, t, token_ids, prediction_mask):
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        token_ids: torch.Tensor,
+        prediction_mask: torch.Tensor,
+    ):
         config = self.config
+
+        b, s, _ = x.shape
+
+        assert einx.matches("b s d", x, d=config.input_size)
+        assert einx.matches("b s", t, b=b, s=s)
+        assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         x = self.proj_in(x)
 
-        sample_ids, position_ids = token_ids[..., 0], token_ids[..., 1:]
+        sample_ids, register_ids, position_ids = (
+            token_ids[..., 0],
+            token_ids[..., 1],
+            token_ids[..., 2:],
+        )
 
-        p_emb = einx.multiply("d, b s -> b s d", self.p_emb, prediction_mask)
+        is_register = register_ids != MASK_SEQUENCE_ID
+        register_ids.masked_fill_(~is_register, 0)
+        reg_emb = self.reg_emb[register_ids]
+        reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
+        x = x + reg_emb
+
+        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
+        x = x + pos_emb
+
+        p_emb = einx.multiply("d, b s -> b s d", self.pred_emb, prediction_mask)
+
+        x = x + p_emb
 
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
-
-        x = x + p_emb
 
         temb = self.temb(t)
 
@@ -351,6 +420,8 @@ class IJEPADepthSmartConfig:
     predictor_target_capacity: float = 0.125
 
     should_tie_predictor_temb: bool = True
+    should_tie_predictor_pos_emb: bool = True
+    should_tie_predictor_reg_emb: bool = True
 
 
 class IJEPADepthSmart(nn.Module):
@@ -367,9 +438,20 @@ class IJEPADepthSmart(nn.Module):
 
         if config.should_tie_predictor_temb:
             self.predictor.temb = self.encoder.temb
+        if config.should_tie_predictor_pos_emb:
+            self.predictor.h_emb = self.encoder.h_emb
+            self.predictor.w_emb = self.encoder.w_emb
+        if config.should_tie_predictor_reg_emb:
+            self.predictor.reg_emb = self.encoder.reg_emb
 
     def forward(
-        self, x, y, x_token_ids, y_token_ids, interp=0, return_smooth_rank=False
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        x_token_ids: torch.Tensor,
+        y_token_ids: torch.Tensor,
+        interp=0,
+        return_smooth_rank=False,
     ):
         config = self.config
         device, dtype = x.device, x.dtype
