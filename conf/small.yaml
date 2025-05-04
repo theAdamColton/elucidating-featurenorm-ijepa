@@ -5,7 +5,7 @@ conf:
   batch_size: 256
   num_workers: 8
   lr: 5e-4
-  interp_warmup_steps: 1
+  interp_warmup_steps: 30000
   train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
   val_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar
   model:
