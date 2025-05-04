@@ -8,9 +8,7 @@ import einx
 from dataclasses import dataclass, field
 
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
-
-
-MASK_SEQUENCE_ID = -100
+from src.dataset import MASK_SEQUENCE_ID
 
 
 def compute_smooth_rank(x, eps=1e-7):
