@@ -20,7 +20,7 @@ conf:
           embed_dim: 64
           head_dim: 64
           num_attention_heads: 1
-      norm_out_mode: layernorm
+      norm_out_mode: batchnorm
     predictor:
       input_size: 64
       num_transformer_blocks: 1
@@ -34,6 +34,6 @@ conf:
           num_attention_heads: 1
     predictor_batch_repeat: 8
     depthsmart_mode: disabled
-    target_norm_mode: layernorm
+    target_norm_mode: disabled
   mode: train
   validate_every_num_epochs: 20

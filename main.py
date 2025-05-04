@@ -5,7 +5,7 @@ from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from torch import nn
+from torch import is_floating_point, nn
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
@@ -523,7 +523,10 @@ def main(conf: MainConfig = MainConfig()):
                     for ema_p, p in zip(
                         model.ema_encoder.parameters(), model.encoder.parameters()
                     ):
-                        ema_p.lerp_(p, 1 - ema_beta)
+                        if p.is_floating_point():
+                            ema_p.lerp_(p, 1 - ema_beta)
+                        else:
+                            ema_p.copy_(p)
 
                     if should_log:
                         num_samples = 0

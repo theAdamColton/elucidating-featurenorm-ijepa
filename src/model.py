@@ -148,6 +148,47 @@ class AdaLayerNormShiftScale(nn.Module):
         return x
 
 
+class RunningBatchNorm(nn.Module):
+    def __init__(self, hidden_size, beta=0.99, eps=1e-7):
+        super().__init__()
+        self.is_initted = nn.Parameter(
+            torch.zeros(1, dtype=torch.bool), requires_grad=False
+        )
+        self.running_mean = nn.Parameter(torch.empty(hidden_size), requires_grad=False)
+        self.running_std = nn.Parameter(torch.empty(hidden_size), requires_grad=False)
+        self.beta = beta
+        self.eps = eps
+
+    def forward(self, x, mask=None):
+        need_init = self.is_initted == 0 and self.training
+        need_update = self.is_initted == 1 and self.training
+
+        if need_init or need_update:
+            if mask is not None:
+                x_tokens = x[mask]
+            else:
+                x_tokens = x
+
+            with torch.no_grad():
+                mean = einx.mean("[...] d", x_tokens)
+                std = einx.std("[...] d", x_tokens)
+
+            if need_init:
+                self.running_mean.copy_(mean)
+                self.running_std.copy_(std)
+
+                self.is_initted.fill_(1)
+
+            elif need_update:
+                self.running_mean.lerp_(mean, 1 - self.beta)
+                self.running_std.lerp_(std, 1 - self.beta)
+
+        x = einx.subtract("... d, d", x, self.running_mean)
+        x = einx.divide("... d, d", x, self.running_std.clamp(self.eps))
+
+        return x
+
+
 @dataclass
 class EncoderConfig:
     input_size: int = 768
@@ -161,7 +202,7 @@ class EncoderConfig:
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
-    norm_out_mode: Literal["disabled", "layernorm"] = "layernorm"
+    norm_out_mode: Literal["disabled", "layernorm", "batchnorm"] = "layernorm"
 
 
 class Encoder(nn.Module):
@@ -202,6 +243,8 @@ class Encoder(nn.Module):
             self.norm_out = nn.LayerNorm(self.hidden_size)
         elif config.norm_out_mode == "disabled":
             self.norm_out = nn.Identity()
+        elif config.norm_out_mode == "batchnorm":
+            self.norm_out = RunningBatchNorm(self.hidden_size)
         else:
             raise ValueError(config.norm_out_mode)
 
@@ -284,7 +327,10 @@ class Encoder(nn.Module):
             elif return_all_layer_features:
                 all_layer_features[i + 1] = x
 
-        x = self.norm_out(x)
+        if config.norm_out_mode == "batchnorm":
+            x = self.norm_out(x, sample_ids != MASK_SEQUENCE_ID)
+        else:
+            x = self.norm_out(x)
 
         if return_target_hidden_states:
             return x, target_hidden_states
@@ -413,7 +459,7 @@ class IJEPADepthSmartConfig:
 
     depthsmart_mode: Literal["random", "disabled"] = "random"
 
-    target_norm_mode: Literal["layernorm", "disabled", "batchnorm"] = "layernorm"
+    target_norm_mode: Literal["layernorm", "disabled"] = "layernorm"
 
     predictor_batch_repeat: int = 8
     predictor_context_capacity: float = 0.125
@@ -488,11 +534,6 @@ class IJEPADepthSmart(nn.Module):
             target_hidden_states = F.layer_norm(
                 target_hidden_states, (target_hidden_states.shape[-1],)
             )
-        elif config.target_norm_mode == "batchnorm":
-            # TODO dont include masked tokens in mean or std
-            mean = target_hidden_states.mean()
-            std = target_hidden_states.std()
-            target_hidden_states = (target_hidden_states - mean) / (std + 1e-5)
         elif config.target_norm_mode == "disabled":
             pass
         else:
