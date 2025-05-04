@@ -17,7 +17,6 @@ import wandb
 import cabbage_patch
 import tensorset
 import webdataset as wds
-from transformers.optimization import get_constant_schedule_with_warmup
 
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
 from validate import validate
@@ -230,6 +229,7 @@ class MainConfig:
     num_workers: int = 0
     seed: int = 420
     num_warmup_steps: int = 5000
+    start_lr: float = 1e-4
     lr: float = 5e-4
     num_epochs: int = 100
 
@@ -435,10 +435,7 @@ def main(conf: MainConfig = MainConfig()):
         trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
 
         optimizer = torch.optim.AdamW(
-            trainable_params, lr=conf.lr, betas=(0.9, 0.95), weight_decay=0.05
-        )
-        lr_scheduler = get_constant_schedule_with_warmup(
-            optimizer, num_warmup_steps=conf.num_warmup_steps
+            trainable_params, lr=conf.start_lr, betas=(0.9, 0.95), weight_decay=0.05
         )
 
         conf_d = asdict(conf)
@@ -523,7 +520,13 @@ def main(conf: MainConfig = MainConfig()):
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
-                    lr_scheduler.step()
+
+                    lr = (
+                        min(1, training_state["global_step"] / conf.num_warmup_steps)
+                        * conf.lr
+                    ) * (conf.lr - conf.start_lr) + conf.start_lr
+                    for g in optimizer.param_groups:
+                        g["lr"] = lr
 
                     for ema_p, p in zip(
                         model.ema_encoder.parameters(), model.encoder.parameters()
@@ -548,7 +551,7 @@ def main(conf: MainConfig = MainConfig()):
                                 epoch=epoch,
                                 loss=loss,
                                 num_samples=num_samples,
-                                lr=lr_scheduler.get_last_lr()[-1],
+                                lr=lr,
                                 ema_beta=ema_beta,
                                 smooth_rank=result_dict["smooth_rank"],
                                 interp=interp,
@@ -635,7 +638,6 @@ def main(conf: MainConfig = MainConfig()):
                 "training_state": training_state,
                 "model": model,
                 "optimizer": optimizer,
-                "lr_scheduler": lr_scheduler,
             },
             str(checkpoint_path),
         )

@@ -20,10 +20,10 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: disabled
+      norm_out_mode: batchnorm
     predictor:
       input_size: 384
-      num_transformer_blocks: 4
+      num_transformer_blocks: 2
       block_config:
         mlp_config:
           embed_dim: 384
@@ -32,7 +32,8 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-    predictor_batch_repeat: 4
-    depthsmart_mode: random
+    predictor_batch_repeat: 8
+    depthsmart_mode: disabled
     target_norm_mode: batchnorm
   mode: train
+  validate_every_num_epochs: 20
