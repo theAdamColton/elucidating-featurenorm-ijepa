@@ -123,13 +123,6 @@ class RopePosEmbedND(nn.Module):
 
 
 class AdaLayerNormShiftScale(nn.Module):
-    """
-    adaptive standardization and rescaling
-    normalization (ASR-Norm)
-
-    https://arxiv.org/pdf/2106.01899
-    """
-
     def __init__(
         self,
         hidden_size,
@@ -149,7 +142,7 @@ class AdaLayerNormShiftScale(nn.Module):
 
 
 class RunningBatchNorm(nn.Module):
-    def __init__(self, hidden_size, beta=0.9, eps=1e-7):
+    def __init__(self, hidden_size, beta=0.99, eps=1e-5):
         super().__init__()
         self.is_initted = nn.Parameter(torch.zeros(1), requires_grad=False)
         self.running_mean = nn.Parameter(torch.empty(hidden_size), requires_grad=False)
@@ -457,7 +450,9 @@ class IJEPADepthSmartConfig:
 
     depthsmart_mode: Literal["random", "disabled"] = "random"
 
-    target_norm_mode: Literal["layernorm", "disabled", "batchnorm"] = "layernorm"
+    target_norm_mode: Literal[
+        "layernorm", "disabled", "batchnorm", "running-batchnorm"
+    ] = "layernorm"
 
     predictor_batch_repeat: int = 8
     predictor_context_capacity: float = 0.125
@@ -476,7 +471,11 @@ class IJEPADepthSmart(nn.Module):
         self.encoder = Encoder(config.encoder)
         self.ema_encoder = Encoder(config.encoder)
         self.ema_encoder.load_state_dict(self.encoder.state_dict())
+        self.ema_encoder.eval()
         self.ema_encoder.requires_grad_(False)
+
+        if config.target_norm_mode == "running-batchnorm":
+            self.running_batchnorm = RunningBatchNorm(self.encoder.hidden_size)
 
         self.predictor = Predictor(config.predictor)
 
@@ -541,6 +540,10 @@ class IJEPADepthSmart(nn.Module):
             target_hidden_states = einx.divide(
                 "b s d, d", target_hidden_states, std.clamp(eps)
             )
+        elif config.target_norm_mode == "running-batchnorm":
+            mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
+            target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
+
         elif config.target_norm_mode == "disabled":
             pass
         else:
