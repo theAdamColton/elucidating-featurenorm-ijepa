@@ -247,7 +247,9 @@ class MainConfig:
     num_image_channels: int = 3
 
     ema_beta: float = 0.996
-    ema_beta_warmup_steps: int = 200
+    ema_beta_start: float = 0.5
+    ema_beta_warmup_steps: int = 1000
+
     interp_warmup_steps: int = 100000
 
     # Webdataset tars
@@ -498,7 +500,8 @@ def main(conf: MainConfig = MainConfig()):
                             1,
                             training_state["global_step"] / conf.ema_beta_warmup_steps,
                         )
-                        * conf.ema_beta
+                        * (conf.ema_beta - conf.ema_beta_start)
+                        + conf.ema_beta_start
                     )
 
                     should_log = (
@@ -523,7 +526,6 @@ def main(conf: MainConfig = MainConfig()):
 
                     lr = (
                         min(1, training_state["global_step"] / conf.num_warmup_steps)
-                        * conf.lr
                     ) * (conf.lr - conf.start_lr) + conf.start_lr
                     for g in optimizer.param_groups:
                         g["lr"] = lr
