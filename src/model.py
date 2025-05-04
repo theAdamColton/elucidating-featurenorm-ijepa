@@ -448,7 +448,8 @@ class IJEPADepthSmartConfig:
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig())
     predictor: PredictorConfig = field(default_factory=lambda: PredictorConfig())
 
-    depthsmart_mode: Literal["random", "disabled"] = "random"
+    depthsmart_mode: Literal["random-layers", "disabled", "noise"] = "random-layers"
+    num_denoiser_timesteps: int = 1000
 
     target_norm_mode: Literal[
         "layernorm", "disabled", "batchnorm", "running-batchnorm"
@@ -508,10 +509,12 @@ class IJEPADepthSmart(nn.Module):
 
         num_feature_depth = config.encoder.num_transformer_blocks + 1
 
-        if config.depthsmart_mode == "random":
+        if config.depthsmart_mode == "random-layers":
             t = torch.randint(0, num_feature_depth, (b,), device=device)
         elif config.depthsmart_mode == "disabled":
             t = torch.full((b,), num_feature_depth - 1, device=device)
+        elif config.depthsmart_mode == "noise":
+            t = torch.randint(0, config.num_denoiser_timesteps, (b,), device=device)
         else:
             raise ValueError(config.depthsmart_mode)
 
@@ -519,13 +522,20 @@ class IJEPADepthSmart(nn.Module):
         y_t = einx.rearrange("b -> b ys", t, ys=ys)
 
         with torch.no_grad():
-            ema_encoder_outputs, target_hidden_states = self.ema_encoder(
-                y, y_t, y_token_ids, return_target_hidden_states=True
+            ema_encoder_outputs = self.ema_encoder(
+                y,
+                y_t,
+                y_token_ids,
+                return_target_hidden_states=config.depthsmart_mode == "random-layers",
             )
 
-            target_hidden_states = (
-                ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
-            )
+            if config.depthsmart_mode == "random-layers":
+                ema_encoder_outputs, target_hidden_states, *_ = ema_encoder_outputs
+                target_hidden_states = (
+                    ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
+                )
+            else:
+                target_hidden_states, *_ = ema_encoder_outputs
 
         if config.target_norm_mode == "layernorm":
             target_hidden_states = F.layer_norm(
@@ -597,6 +607,9 @@ class IJEPADepthSmart(nn.Module):
         target_token_ids = einx.get_at(
             "rb [ys] nd, rb m -> rb m nd", y_token_ids, target_ids
         )
+
+        if config.depthsmart_mode == "noise":
+            raise NotImplementedError()
 
         x = torch.cat((ctx, targets), 1)
         token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
