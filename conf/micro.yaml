@@ -34,6 +34,6 @@ conf:
           num_attention_heads: 1
     predictor_batch_repeat: 8
     depthsmart_mode: disabled
-    target_norm_mode: disabled
+    target_norm_mode: batchnorm
   mode: train
   validate_every_num_epochs: 20

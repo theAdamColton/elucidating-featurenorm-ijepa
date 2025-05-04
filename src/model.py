@@ -457,7 +457,7 @@ class IJEPADepthSmartConfig:
 
     depthsmart_mode: Literal["random", "disabled"] = "random"
 
-    target_norm_mode: Literal["layernorm", "disabled"] = "layernorm"
+    target_norm_mode: Literal["layernorm", "disabled", "batchnorm"] = "layernorm"
 
     predictor_batch_repeat: int = 8
     predictor_context_capacity: float = 0.125
@@ -531,6 +531,15 @@ class IJEPADepthSmart(nn.Module):
         if config.target_norm_mode == "layernorm":
             target_hidden_states = F.layer_norm(
                 target_hidden_states, (target_hidden_states.shape[-1],)
+            )
+        elif config.target_norm_mode == "batchnorm":
+            mask = y_token_ids != MASK_SEQUENCE_ID
+            mean = einx.mean("[n] d", target_hidden_states[mask])
+            std = einx.mean("[n] d", target_hidden_states)
+            target_hidden_states = einx.subtract("b s d, d", target_hidden_states, mean)
+            eps = 1e-7
+            target_hidden_states = einx.divide(
+                "b s d, d", target_hidden_states, std.clamp(eps)
             )
         elif config.target_norm_mode == "disabled":
             pass
