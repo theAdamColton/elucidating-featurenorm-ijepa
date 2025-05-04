@@ -609,6 +609,12 @@ class IJEPADepthSmart(nn.Module):
         )
 
         if config.depthsmart_mode == "noise":
+            noise_timesteps = einx.rearrange(
+                "b -> (r b)", t, r=config.predictor_batch_repeat
+            )
+            noise = torch.randn_like(targets)
+            # TODO can i denoise both targets and context?
+            # will this collapse?
             raise NotImplementedError()
 
         x = torch.cat((ctx, targets), 1)
