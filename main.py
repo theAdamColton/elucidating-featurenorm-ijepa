@@ -160,10 +160,14 @@ class ContextTargetPatcher(nn.Module):
             round(ctx.shape[0] / config.num_tokens_per_register_token)
         )
         num_ctx_register_tokens = max(num_ctx_register_tokens, 1)
-        ctx = torch.cat((torch.zeros(1, d, dtype=ctx.dtype), ctx))
+        ctx = torch.cat((torch.zeros(num_ctx_register_tokens, d, dtype=ctx.dtype), ctx))
         ctx_position_ids = torch.cat(
             (
-                torch.zeros(1, target_position_ids.shape[-1], dtype=torch.long),
+                torch.zeros(
+                    num_ctx_register_tokens,
+                    target_position_ids.shape[-1],
+                    dtype=torch.long,
+                ),
                 ctx_position_ids,
             )
         )
@@ -176,13 +180,19 @@ class ContextTargetPatcher(nn.Module):
         )
 
         num_target_register_tokens = int(
-            round(ctx.shape[0] / config.num_tokens_per_register_token)
+            round(target.shape[0] / config.num_tokens_per_register_token)
         )
         num_target_register_tokens = max(num_target_register_tokens, 1)
-        target = torch.cat((torch.zeros(1, d, dtype=target.dtype), target))
+        target = torch.cat(
+            (torch.zeros(num_target_register_tokens, d, dtype=target.dtype), target)
+        )
         target_position_ids = torch.cat(
             (
-                torch.zeros(1, target_position_ids.shape[-1], dtype=torch.long),
+                torch.zeros(
+                    num_target_register_tokens,
+                    target_position_ids.shape[-1],
+                    dtype=torch.long,
+                ),
                 target_position_ids,
             )
         )

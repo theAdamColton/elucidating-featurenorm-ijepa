@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
 
-from src.model import IJEPADepthSmart
+from src.model import MASK_SEQUENCE_ID, IJEPADepthSmart
 
 
 class MultiDepthClassifier(nn.Module):
@@ -37,9 +37,10 @@ class MultiDepthClassifier(nn.Module):
 
 
 class SimplePatcher:
-    def __init__(self, size=256, patch_size=16):
+    def __init__(self, size=256, patch_size=16, num_tokens_per_register_token=32):
         self.size = size
         self.patch_size = patch_size
+        self.num_tokens_per_register_token = num_tokens_per_register_token
 
     def __call__(self, row):
         x = row.pop("pixel_values")
@@ -48,6 +49,7 @@ class SimplePatcher:
         x = torchvision.transforms.CenterCrop(crop_size)(x)
         x = torchvision.transforms.Resize((self.size, self.size))(x)
         x = einx.rearrange("c (np ps)... -> (np...) (ps... c)", x, ps=self.patch_size)
+        *_, d = x.shape
         position_ids = torch.meshgrid(
             (
                 torch.arange(self.size // self.patch_size),
@@ -57,10 +59,28 @@ class SimplePatcher:
         )
         position_ids = torch.stack(position_ids, -1)
         position_ids = einx.rearrange("s... nd -> (s...) nd", position_ids)
-        sequence_ids = torch.full((x.shape[0],), 0)
-        token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
+
+        token_ids = position_ids
+
+        num_register_tokens = token_ids.shape[0] // self.num_tokens_per_register_token
+        num_register_tokens = max(1, num_register_tokens)
+        x = torch.cat((torch.zeros(num_register_tokens, d, dtype=x.dtype), x))
+        token_ids = torch.cat(
+            (
+                torch.zeros(num_register_tokens, token_ids.shape[-1], dtype=torch.long),
+                token_ids,
+            )
+        )
+        register_ids = torch.full((token_ids.shape[0],), MASK_SEQUENCE_ID)
+        register_ids[:num_register_tokens] = torch.arange(num_register_tokens)
+        token_ids = torch.cat((register_ids.unsqueeze(-1), token_ids), -1)
+
+        sequence_ids = torch.full((token_ids.shape[0], 1), 0)
+        token_ids = torch.cat((sequence_ids, token_ids), -1)
+
         row["patches"] = x
         row["token_ids"] = token_ids
+
         return row
 
 
@@ -143,7 +163,7 @@ def validate(
 
                         with autocast_fn():
                             with torch.inference_mode():
-                                _, layer_features = model.ema_encoder(
+                                _, layer_features = encoder(
                                     patches,
                                     t,
                                     token_ids,
@@ -162,9 +182,7 @@ def validate(
 
                             with autocast_fn():
                                 with torch.inference_mode():
-                                    features, *_ = model.ema_encoder(
-                                        patches, t, token_ids
-                                    )
+                                    features, *_ = encoder(patches, t, token_ids)
                             features = einx.mean("b [s] d", features)
                             layer_features.append(features)
 
