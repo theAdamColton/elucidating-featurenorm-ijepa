@@ -5,7 +5,7 @@ from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from torch import is_floating_point, nn
+from torch import nn
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
@@ -285,7 +285,12 @@ def main(conf: MainConfig = MainConfig()):
 
     patch_size = conf.patcher.patch_size
     max_patch_side_length = conf.patcher.max_side_length // patch_size
+
+    # TODO consolidate this register token count computation
     max_sequence_length = max_patch_side_length**2
+    max_sequence_length = max_sequence_length + max(
+        max_sequence_length // conf.patcher.num_tokens_per_register_token, 1
+    )
 
     pad_value_dict = {
         "position_ids": 0,
