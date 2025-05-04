@@ -149,11 +149,9 @@ class AdaLayerNormShiftScale(nn.Module):
 
 
 class RunningBatchNorm(nn.Module):
-    def __init__(self, hidden_size, beta=0.99, eps=1e-7):
+    def __init__(self, hidden_size, beta=0.9, eps=1e-7):
         super().__init__()
-        self.is_initted = nn.Parameter(
-            torch.zeros(1, dtype=torch.bool), requires_grad=False
-        )
+        self.is_initted = nn.Parameter(torch.zeros(1), requires_grad=False)
         self.running_mean = nn.Parameter(torch.empty(hidden_size), requires_grad=False)
         self.running_std = nn.Parameter(torch.empty(hidden_size), requires_grad=False)
         self.beta = beta
@@ -161,7 +159,7 @@ class RunningBatchNorm(nn.Module):
 
     def forward(self, x, mask=None):
         need_init = self.is_initted == 0 and self.training
-        need_update = self.is_initted == 1 and self.training
+        need_update = self.is_initted > 0 and self.training
 
         if need_init or need_update:
             if mask is not None:

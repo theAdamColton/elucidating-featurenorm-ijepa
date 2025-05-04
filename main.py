@@ -247,7 +247,7 @@ class MainConfig:
     num_image_channels: int = 3
 
     ema_beta: float = 0.996
-    ema_beta_warmup_steps: int = 1000
+    ema_beta_warmup_steps: int = 200
     interp_warmup_steps: int = 100000
 
     # Webdataset tars
