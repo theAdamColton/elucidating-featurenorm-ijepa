@@ -5,7 +5,6 @@ from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from torch import nn
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
@@ -14,209 +13,10 @@ import random
 import torch
 from dataclasses import dataclass, field, asdict
 import wandb
-import cabbage_patch
-import tensorset
-import webdataset as wds
 
+from dataset import get_context_target_dataset
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
 from validate import validate
-
-
-@dataclass
-class ContextTargetPatcherConfig:
-    patch_size: int = 16
-    window_size: int = 2
-
-    max_side_length: int = 256
-    min_side_length: int = 64
-    max_num_context_tokens: int = 128
-
-    num_tokens_per_register_token: int = 32
-
-    def __post_init__(self):
-        assert self.max_side_length % self.patch_size == 0
-        assert self.min_side_length % self.patch_size == 0
-        assert self.max_num_context_tokens % self.window_size**2 == 0
-
-
-def patch(x, patch_size=8):
-    h, w, c = x.shape
-    nph, npw = h // patch_size, w // patch_size
-    x = x.reshape(nph, patch_size, npw, patch_size, c)
-    x = x.permute(0, 2, 1, 3, 4)
-    x = x.reshape(nph, npw, patch_size, patch_size, c)
-    return x
-
-
-class ContextTargetPatcher(nn.Module):
-    def __init__(self, config=ContextTargetPatcherConfig()):
-        super().__init__()
-        self.config = config
-
-    def forward(self, row):
-        """
-        x: PIL image
-        """
-        config = self.config
-        patch_size = config.patch_size
-        c = 3
-
-        x = row.pop("pixel_values")
-
-        row["x_patches"] = None
-        row["y_patches"] = None
-
-        input_h, input_w = x.size
-
-        input_side_length = (input_h + input_w) / 2
-        max_side_length = min(config.max_side_length, int(input_side_length))
-
-        if max_side_length < config.min_side_length:
-            # print("Warning, image is too small to process!", input_h, input_w)
-            return row
-
-        sampled_side_length = random.randint(config.min_side_length, max_side_length)
-
-        scale_factor = sampled_side_length / input_side_length
-
-        image_crop_size = (input_h * scale_factor, input_w * scale_factor)
-        multiple_of = config.patch_size * config.window_size
-        image_crop_size = tuple(
-            int(size // multiple_of) * multiple_of for size in image_crop_size
-        )
-        image_crop_size = tuple(max(size, multiple_of) for size in image_crop_size)
-
-        # Hack to prevent too few windows
-        num_windows = sum(size // multiple_of for size in image_crop_size)
-        while num_windows < 2:
-            image_crop_size = tuple(size + multiple_of for size in image_crop_size)
-            num_windows = sum(size // multiple_of for size in image_crop_size)
-
-        # nearest resampling
-        x = x.convert("RGB").resize(image_crop_size, resample=0)
-        x = torch.from_numpy(np.array(x))
-
-        # (nph ph) (npw pw) c -> nph npw ph pw c
-        x = patch(x, patch_size)
-        # nph npw ph pw c -> nph npw (ph pw c)
-        x = x.reshape(x.shape[0], x.shape[1], patch_size**2 * c)
-
-        position_ids = torch.meshgrid(
-            (torch.arange(x.shape[0]), torch.arange(x.shape[1])), indexing="ij"
-        )
-        position_ids = torch.stack(position_ids, -1)
-
-        # (nwh wh) (nww ww) d -> nwh nww wh ww d
-        x = patch(x, config.window_size)
-        # nwh nww wh ww d -> (nwh nww) (wh ww) d
-        x = x.reshape(-1, config.window_size**2, x.shape[-1])
-
-        # (nwh wh) (nww ww) nd -> nwh nww wh ww nd
-        position_ids = patch(position_ids, config.window_size)
-        # nwh nww wh ww nd -> (nwh nww) (wh ww) nd
-        position_ids = position_ids.reshape(
-            -1, config.window_size**2, position_ids.shape[-1]
-        )
-
-        nw, ws, d = x.shape
-
-        max_num_register_tokens = (
-            config.max_num_context_tokens // config.num_tokens_per_register_token
-        )
-        max_num_ctx_windows = (
-            config.max_num_context_tokens - max_num_register_tokens
-        ) // ws
-        max_num_ctx_windows = min(nw - 1, max_num_ctx_windows)
-
-        if nw <= 2:
-            num_ctx_windows = 1
-        else:
-            num_ctx_windows = random.randint(1, max_num_ctx_windows)
-
-        random_ids = torch.randperm(nw)
-
-        # [nw] ws d, nw -> nw ws d
-        x = x[random_ids]
-        position_ids = position_ids[random_ids]
-
-        ctx, target = x[:num_ctx_windows], x[num_ctx_windows:]
-        ctx_position_ids, target_position_ids = (
-            position_ids[:num_ctx_windows],
-            position_ids[num_ctx_windows:],
-        )
-
-        # nxw ws d -> (nxw ws) d
-        ctx = ctx.reshape(-1, ctx.shape[-1])
-        ctx_position_ids = ctx_position_ids.reshape(-1, ctx_position_ids.shape[-1])
-
-        # nyw ws d -> (nyw ws) d
-        target = target.reshape(-1, target.shape[-1])
-        target_position_ids = target_position_ids.reshape(
-            -1, target_position_ids.shape[-1]
-        )
-
-        num_ctx_register_tokens = int(
-            round(ctx.shape[0] / config.num_tokens_per_register_token)
-        )
-        num_ctx_register_tokens = max(num_ctx_register_tokens, 1)
-        ctx = torch.cat((torch.zeros(num_ctx_register_tokens, d, dtype=ctx.dtype), ctx))
-        ctx_position_ids = torch.cat(
-            (
-                torch.zeros(
-                    num_ctx_register_tokens,
-                    target_position_ids.shape[-1],
-                    dtype=torch.long,
-                ),
-                ctx_position_ids,
-            )
-        )
-        ctx_register_ids = torch.full((ctx_position_ids.shape[0],), MASK_SEQUENCE_ID)
-        ctx_register_ids[:num_ctx_register_tokens] = torch.arange(
-            num_ctx_register_tokens
-        )
-        ctx_position_ids = torch.cat(
-            (ctx_register_ids.unsqueeze(-1), ctx_position_ids), -1
-        )
-
-        num_target_register_tokens = int(
-            round(target.shape[0] / config.num_tokens_per_register_token)
-        )
-        num_target_register_tokens = max(num_target_register_tokens, 1)
-        target = torch.cat(
-            (torch.zeros(num_target_register_tokens, d, dtype=target.dtype), target)
-        )
-        target_position_ids = torch.cat(
-            (
-                torch.zeros(
-                    num_target_register_tokens,
-                    target_position_ids.shape[-1],
-                    dtype=torch.long,
-                ),
-                target_position_ids,
-            )
-        )
-        target_register_ids = torch.full(
-            (target_position_ids.shape[0],), MASK_SEQUENCE_ID
-        )
-        target_register_ids[:num_target_register_tokens] = torch.arange(
-            num_target_register_tokens
-        )
-        target_position_ids = torch.cat(
-            (target_register_ids.unsqueeze(-1), target_position_ids), -1
-        )
-
-        row["x_patches"] = tensorset.TensorSet(
-            patches=ctx, position_ids=ctx_position_ids
-        )
-        row["y_patches"] = tensorset.TensorSet(
-            patches=target, position_ids=target_position_ids
-        )
-
-        return row
-
-
-def filter_rows(row):
-    return row["x_patches"] is not None and row["y_patches"] is not None
 
 
 @dataclass
@@ -232,6 +32,8 @@ class MainConfig:
     start_lr: float = 1e-4
     lr: float = 5e-4
     num_epochs: int = 100
+
+    patch_size: int = 16
 
     log_every_num_steps: int = 50
     validate_every_num_epochs: int = 10
@@ -259,10 +61,6 @@ class MainConfig:
     label_column_name: str = "cls"
     num_classes: int = 1000
 
-    patcher: ContextTargetPatcherConfig = field(
-        default_factory=lambda: ContextTargetPatcherConfig()
-    )
-
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()
     )
@@ -272,6 +70,8 @@ class MainConfig:
     def __post_init__(self):
         assert self.batch_size % self.packer_batch_size == 0
         assert self.packer_batch_size <= self.batch_size
+        image_channels = 3
+        assert self.model.encoder.input_size == image_channels * self.patch_size**2
 
 
 def main(conf: MainConfig = MainConfig()):
@@ -285,44 +85,16 @@ def main(conf: MainConfig = MainConfig()):
     input_size = conf.model.encoder.input_size
     num_image_channels = conf.num_image_channels
 
-    patch_size = conf.patcher.patch_size
-    max_patch_side_length = conf.patcher.max_side_length // patch_size
+    patch_size = conf.patch_size
 
-    # TODO consolidate this register token count computation
-    max_sequence_length = max_patch_side_length**2
-    max_sequence_length = max_sequence_length + max(
-        max_sequence_length // conf.patcher.num_tokens_per_register_token, 1
-    )
-
-    pad_value_dict = {
-        "position_ids": 0,
-        "patches": 0,
-        "sequence_ids": MASK_SEQUENCE_ID,
-        "register_ids": MASK_SEQUENCE_ID,
-    }
-
-    dataset = (
-        cabbage_patch.CabbageDataset(
-            conf.train_dataset_pattern,
-            shardshuffle=True,
-            detshuffle=True,
-            seed=conf.seed,
-            nodesplitter=wds.split_by_node,
-        )
-        .shuffle(1000)
-        .decode("pil", handler=wds.handlers.warn_and_continue)
-        .rename(pixel_values=conf.image_column_name)
-        .map(ContextTargetPatcher(conf.patcher))
-        .select(filter_rows)
-        .packed_x_y(
-            conf.patcher.max_num_context_tokens,
-            max_sequence_length,
-            conf.packer_batch_size,
-            pad_value_dict=pad_value_dict,
-        )
-        .shuffle(16)
-        .to_tuple("x_patches", "y_patches")
-        .batched(conf.batch_size // conf.packer_batch_size, partial=False)
+    dataset = get_context_target_dataset(
+        dataset_pattern=conf.train_dataset_pattern,
+        seed=conf.seed,
+        image_column_name=conf.image_column_name,
+        label_column_name=conf.label_column_name,
+        batch_size=conf.batch_size,
+        packer_batch_size=conf.packer_batch_size,
+        patch_size=patch_size,
     )
 
     if conf.mode == "make-viz":
@@ -425,7 +197,6 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
             validation_depthsmart_mode=conf.validation_depthsmart_mode,
-            num_tokens_per_register_token=conf.patcher.num_tokens_per_register_token,
         )
         print("ACCURACIES", accuracies)
 
@@ -597,7 +368,6 @@ def main(conf: MainConfig = MainConfig()):
                     validation_probe_batch_size=conf.validation_probe_batch_size,
                     validation_train_epochs=conf.validation_train_epochs,
                     validation_depthsmart_mode=conf.validation_depthsmart_mode,
-                    num_tokens_per_register_token=conf.patcher.num_tokens_per_register_token,
                 )
 
                 gc.collect()

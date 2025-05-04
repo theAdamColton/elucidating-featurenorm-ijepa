@@ -184,10 +184,10 @@ def get_test_dataset(
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
     batch_size: int = 256,
-    packer_batch_size: int = 16,
     image_size: int = 256,
     patch_size: int = 16,
     num_tokens_per_register_token: int = 32,
+    shuffle_size_batches: int = 16,
 ):
     dataset = (
         _get_image_dataset(
@@ -203,7 +203,13 @@ def get_test_dataset(
         .map(TokenFlattener())
         .map(RegisterTokenAdder(num_tokens_per_register_token))
         .map(SequenceIDAdder())
+        .batched(batch_size)
     )
+
+    if shuffle:
+        dataset = dataset.shuffle(shuffle_size_batches)
+
+    return dataset
 
 
 class ImageSizeFilter:
@@ -381,7 +387,6 @@ packed_x_y = wds.pipelinefilter(_packed_x_y)
 def get_context_target_dataset(
     dataset_pattern: str = "",
     seed: int = 42,
-    shuffle: bool = True,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
@@ -414,7 +419,7 @@ def get_context_target_dataset(
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
-            shuffle=shuffle,
+            shuffle=True,
             seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,

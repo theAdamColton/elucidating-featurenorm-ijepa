@@ -5,14 +5,14 @@ import tempfile
 import torch
 import einx
 from contextlib import contextmanager
-import torchvision
 import webdataset as wds
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
 
-from src.model import MASK_SEQUENCE_ID, IJEPADepthSmart
+from dataset import get_test_dataset
+from src.model import IJEPADepthSmart
 
 
 class MultiDepthClassifier(nn.Module):
@@ -33,54 +33,6 @@ class MultiDepthClassifier(nn.Module):
         loss = F.cross_entropy(logits, lab)
 
         return preds, loss
-
-
-class SimplePatcher:
-    def __init__(self, size=256, patch_size=16, num_tokens_per_register_token=32):
-        self.size = size
-        self.patch_size = patch_size
-        self.num_tokens_per_register_token = num_tokens_per_register_token
-
-    def __call__(self, row):
-        x = row.pop("pixel_values")
-        _, og_h, og_w = x.shape
-        crop_size = min(og_h, og_w)
-        x = torchvision.transforms.CenterCrop(crop_size)(x)
-        x = torchvision.transforms.Resize((self.size, self.size))(x)
-        x = einx.rearrange("c (np ps)... -> (np...) (ps... c)", x, ps=self.patch_size)
-        *_, d = x.shape
-        position_ids = torch.meshgrid(
-            (
-                torch.arange(self.size // self.patch_size),
-                torch.arange(self.size // self.patch_size),
-            ),
-            indexing="ij",
-        )
-        position_ids = torch.stack(position_ids, -1)
-        position_ids = einx.rearrange("s... nd -> (s...) nd", position_ids)
-
-        token_ids = position_ids
-
-        num_register_tokens = token_ids.shape[0] // self.num_tokens_per_register_token
-        num_register_tokens = max(1, num_register_tokens)
-        x = torch.cat((torch.zeros(num_register_tokens, d, dtype=x.dtype), x))
-        token_ids = torch.cat(
-            (
-                torch.zeros(num_register_tokens, token_ids.shape[-1], dtype=torch.long),
-                token_ids,
-            )
-        )
-        register_ids = torch.full((token_ids.shape[0],), MASK_SEQUENCE_ID)
-        register_ids[:num_register_tokens] = torch.arange(num_register_tokens)
-        token_ids = torch.cat((register_ids.unsqueeze(-1), token_ids), -1)
-
-        sequence_ids = torch.full((token_ids.shape[0], 1), 0)
-        token_ids = torch.cat((sequence_ids, token_ids), -1)
-
-        row["patches"] = x
-        row["token_ids"] = token_ids
-
-        return row
 
 
 def validate(
@@ -116,32 +68,30 @@ def validate(
         with torch.autocast(device.type, dtype):
             yield
 
-    def _load_simple_dataloader(pattern):
-        ds = (
-            wds.WebDataset(pattern)
-            .shuffle(1000)
-            .decode("torchrgb8", handler=wds.handlers.warn_and_continue)
-            .rename(
-                pixel_values=image_column_name,
-                label=label_column_name,
-            )
-            .map(
-                SimplePatcher(
-                    validation_image_size, patch_size, num_tokens_per_register_token
-                )
-            )
-            .batched(batch_size)
-            .shuffle(16)
-        )
-        dl = DataLoader(ds, batch_size=None, num_workers=num_workers)
-        return dl
-
-    val_train_dataloader = _load_simple_dataloader(train_dataset_pattern)
-    val_test_dataloader = _load_simple_dataloader(val_dataset_pattern)
+    val_train_dataset = get_test_dataset(
+        dataset_pattern=train_dataset_pattern,
+        shuffle=True,
+        image_column_name=image_column_name,
+        label_column_name=label_column_name,
+        batch_size=batch_size,
+        image_size=validation_image_size,
+        patch_size=patch_size,
+    )
+    val_test_dataset = get_test_dataset(
+        dataset_pattern=val_dataset_pattern,
+        shuffle=True,
+        image_column_name=image_column_name,
+        label_column_name=label_column_name,
+        batch_size=batch_size,
+        image_size=validation_image_size,
+        patch_size=patch_size,
+    )
 
     with tempfile.TemporaryDirectory(dir=".") as tmpdir:
 
-        def _embed_dataset(dl, prefix="train-"):
+        def _embed_dataset(ds, prefix="train-"):
+            dl = DataLoader(ds, num_workers=num_workers, batch_size=None)
+
             with wds.ShardWriter(f"{tmpdir}/{prefix}%04d.tar") as writer:
                 pass
 
@@ -209,8 +159,8 @@ def validate(
                 urls = list(glob(f"{tmpdir}/{prefix}*.tar"))
                 return urls
 
-        train_tar_urls = _embed_dataset(val_train_dataloader, "train-")
-        test_tar_urls = _embed_dataset(val_test_dataloader, "test-")
+        train_tar_urls = _embed_dataset(val_train_dataset, "train-")
+        test_tar_urls = _embed_dataset(val_test_dataset, "test-")
 
         classifier = MultiDepthClassifier(
             num_feature_depth, num_classes, num_features
@@ -220,6 +170,9 @@ def validate(
             classifier.parameters(),
             lr=validation_probe_lr,
         )
+
+        if should_compile:
+            classifier = torch.compile(classifier)
 
         train_dataset = (
             wds.WebDataset(train_tar_urls, empty_check=False).shuffle(1000).decode()
