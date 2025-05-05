@@ -208,6 +208,8 @@ class EncoderConfig:
         default_factory=lambda: TransformerBlockConfig()
     )
 
+    use_rope2d: bool = True
+
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
@@ -241,9 +243,10 @@ class Encoder(nn.Module):
         )
         init.trunc_normal_(self.w_emb, std=0.02)
 
-        self.rope_pos_emb = RopePosEmbedND(
-            axes_dim=(self.head_dim // 2, self.head_dim // 2)
-        )
+        if config.use_rope2d:
+            self.rope_pos_emb = RopePosEmbedND(
+                axes_dim=(self.head_dim // 2, self.head_dim // 2)
+            )
 
         self.blocks = nn.ModuleList(
             TransformerBlock(config.block_config)
@@ -295,7 +298,10 @@ class Encoder(nn.Module):
         reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
         x = x + reg_emb
 
-        rotary_embeds = self.rope_pos_emb(position_ids)
+        if config.use_rope2d:
+            rotary_embeds = self.rope_pos_emb(position_ids)
+        else:
+            rotary_embeds = None
 
         pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
         x = x + pos_emb
@@ -363,6 +369,7 @@ class PredictorConfig:
         default_factory=lambda: TransformerBlockConfig()
     )
 
+    use_rope2d: bool = True
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
@@ -383,10 +390,22 @@ class Predictor(nn.Module):
 
         self.temb = TimestepEmbedder(self.hidden_size)
 
+        self.h_emb = nn.Parameter(
+            torch.empty(config.max_num_height_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.h_emb, std=0.02)
+        self.w_emb = nn.Parameter(
+            torch.empty(config.max_num_width_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.w_emb, std=0.02)
+
         self.pred_emb = nn.Parameter(torch.empty(self.hidden_size))
         init.trunc_normal_(self.pred_emb, std=0.02)
 
-        self.pos_emb = RopePosEmbedND(axes_dim=(self.head_dim // 2, self.head_dim // 2))
+        if config.use_rope2d:
+            self.pos_emb = RopePosEmbedND(
+                axes_dim=(self.head_dim // 2, self.head_dim // 2)
+            )
 
         self.blocks = nn.ModuleList(
             TransformerBlock(config.block_config)
@@ -422,6 +441,9 @@ class Predictor(nn.Module):
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
+        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
+        x = x + pos_emb
+
         p_emb = einx.multiply("d, b s -> b s d", self.pred_emb, prediction_mask)
 
         x = x + p_emb
@@ -435,7 +457,10 @@ class Predictor(nn.Module):
             h=config.block_config.attention_config.num_attention_heads,
         )
 
-        rotary_embeds = self.pos_emb(position_ids)
+        if config.use_rope2d:
+            rotary_embeds = self.pos_emb(position_ids)
+        else:
+            rotary_embeds = None
 
         for block in self.blocks:
             x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
@@ -492,6 +517,7 @@ class IJEPADepthSmart(nn.Module):
         device, dtype = x.device, x.dtype
 
         b, xs, d = x.shape
+        b, ts, d = y.shape
 
         y = torch.cat((x, y), 1)
         y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
@@ -528,6 +554,11 @@ class IJEPADepthSmart(nn.Module):
             else:
                 target_hidden_states, *_ = ema_encoder_outputs
 
+        # Keep only the target hidden states from
+        # tokens absent from context
+        target_hidden_states = target_hidden_states[:, xs:, :]
+        y_token_ids = y_token_ids[:, xs:, :]
+
         if config.target_norm_mode == "layernorm":
             target_hidden_states = F.layer_norm(
                 target_hidden_states, (target_hidden_states.shape[-1],)
@@ -536,10 +567,12 @@ class IJEPADepthSmart(nn.Module):
             mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
             mean = einx.mean("[n] d", target_hidden_states[mask])
             std = einx.std("[n] d", target_hidden_states[mask])
-            target_hidden_states = einx.subtract("b s d, d", target_hidden_states, mean)
+            target_hidden_states = einx.subtract(
+                "b ts d, d", target_hidden_states, mean
+            )
             eps = 1e-7
             target_hidden_states = einx.divide(
-                "b s d, d", target_hidden_states, std.clamp(eps)
+                "b ts d, d", target_hidden_states, std.clamp(eps)
             )
         elif config.target_norm_mode == "running-batchnorm":
             mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
@@ -558,58 +591,65 @@ class IJEPADepthSmart(nn.Module):
 
         x, *_ = self.encoder(x, x_t, x_token_ids)
 
+        # Repeat tensors for prediction
         target_hidden_states = einx.rearrange(
-            "b ys d -> (r b) ys d",
+            "b ts d -> (r b) ts d",
             target_hidden_states,
             r=config.predictor_batch_repeat,
         )
         x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
         y_token_ids = einx.rearrange(
-            "b ys nd -> (r b) ys nd", y_token_ids, r=config.predictor_batch_repeat
+            "b ts nd -> (r b) ts nd", y_token_ids, r=config.predictor_batch_repeat
         )
         x_token_ids = einx.rearrange(
             "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
         )
 
+        # The predictor uses a random subset of the context
+        # to predict a random subset of the target
         num_ctx_tokens = int(round(xs * config.predictor_context_capacity))
-        ctx_ids = (
-            torch.rand(
-                config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
-            )
-            .topk(num_ctx_tokens, dim=-1, sorted=False)
-            .indices
-        )
+        num_target_tokens = int(round(ts * config.predictor_target_capacity))
 
-        num_target_tokens = int(round(ys * config.predictor_target_capacity))
-        target_ids = (
-            torch.rand(
-                config.predictor_batch_repeat * b, ys, device=device, dtype=dtype
-            )
-            .topk(num_target_tokens, dim=-1, sorted=False)
-            .indices
+        # Random scores for picking context tokens to be used by the predictor
+        ctx_scores = torch.rand(
+            config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
         )
+        # Try to prevent the predictor from being given padding tokens
+        # as part of context
+        is_ctx_padding = x_token_ids[..., 0] == MASK_SEQUENCE_ID
+        ctx_scores.masked_fill_(is_ctx_padding, -1)
+        ctx_ids = ctx_scores.topk(num_ctx_tokens, dim=-1, sorted=False).indices
+
+        target_scores = torch.rand(
+            config.predictor_batch_repeat * b, ts, device=device, dtype=dtype
+        )
+        # Try to prevent the predictor from being given padding tokens
+        # as prediction targets
+        is_target_padding = y_token_ids[..., 0] == MASK_SEQUENCE_ID
+        target_scores.masked_fill_(is_target_padding, -1)
+        target_ids = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
 
         ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, ctx_ids)
         targets = einx.get_at(
-            "rb [ys] d, rb m -> rb m d", target_hidden_states, target_ids
+            "rb [ts] d, rb m -> rb m d", target_hidden_states, target_ids
         )
 
         ctx_token_ids = einx.get_at("rb [xs] nd, rb k -> rb k nd", x_token_ids, ctx_ids)
         target_token_ids = einx.get_at(
-            "rb [ys] nd, rb m -> rb m nd", y_token_ids, target_ids
+            "rb [ts] nd, rb m -> rb m nd", y_token_ids, target_ids
         )
 
         if config.depthsmart_mode == "noise":
             noise_timesteps = einx.rearrange(
                 "b -> (r b)", t, r=config.predictor_batch_repeat
             )
-            noise = torch.randn_like(targets)
-            # TODO can i denoise both targets and context?
-            # will this collapse?
+            noise = torch.randn_like(target_hidden_states)
             raise NotImplementedError()
 
         x = torch.cat((ctx, targets), 1)
         token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
+
+        rb, ps, d = x.shape
 
         prediction_mask = torch.zeros(
             config.predictor_batch_repeat * b,
@@ -619,9 +659,7 @@ class IJEPADepthSmart(nn.Module):
         )
         prediction_mask[:, num_ctx_tokens:] = 1
 
-        t = einx.rearrange(
-            "b -> (r b) ps", t, r=config.predictor_batch_repeat, ps=x.shape[1]
-        )
+        t = einx.rearrange("b -> (r b) ps", t, r=config.predictor_batch_repeat, ps=ps)
 
         x = self.predictor(x, t, token_ids, prediction_mask=prediction_mask)
         predictions = x[:, num_ctx_tokens:]
