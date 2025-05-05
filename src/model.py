@@ -139,6 +139,26 @@ class AdaLayerNormShiftScale(nn.Module):
         return x
 
 
+class DynTanh(nn.Module):
+    def __init__(self, hidden_size, elementwise_affine=True):
+        super().__init__()
+
+        self.alpha = nn.Parameter(torch.full((hidden_size,), 0.5))
+
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.gamma = nn.Parameter(torch.ones(hidden_size))
+            self.beta = nn.Parameter(torch.zeros(hidden_size))
+
+    def forward(self, x):
+        x = F.tanh(einx.multiply("... d, d", x, self.alpha))
+        if self.elementwise_affine:
+            x = einx.multiply("... d, d", x, self.gamma)
+            x = einx.add("... d, d", x, self.beta)
+
+        return x
+
+
 class RunningBatchNorm(nn.Module):
     def __init__(self, hidden_size, beta=0.99, eps=1e-5):
         super().__init__()
@@ -191,7 +211,9 @@ class EncoderConfig:
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
-    norm_out_mode: Literal["disabled", "layernorm", "batchnorm"] = "layernorm"
+    norm_out_mode: Literal["disabled", "layernorm", "batchnorm", "dyntanh"] = (
+        "layernorm"
+    )
 
 
 class Encoder(nn.Module):
@@ -234,6 +256,8 @@ class Encoder(nn.Module):
             self.norm_out = nn.Identity()
         elif config.norm_out_mode == "batchnorm":
             self.norm_out = RunningBatchNorm(self.hidden_size)
+        elif config.norm_out_mode == "dyntanh":
+            self.norm_out = DynTanh(self.hidden_size)
         else:
             raise ValueError(config.norm_out_mode)
 

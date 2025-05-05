@@ -21,7 +21,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: disabled
+      norm_out_mode: dyntanh
     predictor:
       input_size: 384
       num_transformer_blocks: 6
@@ -37,4 +37,4 @@ conf:
     depthsmart_mode: disabled
     target_norm_mode: running-batchnorm
   mode: train
-  validate_every_num_epochs: 20
+  validate_every_num_epochs: 10
