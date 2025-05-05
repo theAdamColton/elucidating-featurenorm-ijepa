@@ -261,7 +261,7 @@ class RandomImageResizer:
 
         sampled_side_length = random.randint(min_side_length, max_side_length)
         scale_factor = sampled_side_length / input_side_length
-        image_crop_size = (input_h * scale_factor, input_w * scale_factor)
+        image_crop_size = (input_w * scale_factor, input_h * scale_factor)
 
         image_crop_size = tuple(
             int(size // multiple_of) * multiple_of for size in image_crop_size
@@ -306,7 +306,9 @@ class ContextTargetSplitter:
 
         num_total_windows = nwh * nww
 
-        max_num_context_windows = self.max_context_sequence_length // window_size
+        tokens_per_window = window_size**2
+
+        max_num_context_windows = self.max_context_sequence_length // tokens_per_window
         max_num_context_windows = min(num_total_windows - 1, max_num_context_windows)
 
         if num_total_windows == 2:
@@ -319,15 +321,15 @@ class ContextTargetSplitter:
         # (nwh wh) (nww ww) -> nwh nww wh ww
         idx = patch(idx.unsqueeze(-1), window_size).squeeze(-1)
         # nwh nww wh ww -> (nwh nww) (wh ww)
-        idx = idx.reshape(-1, window_size**2)
+        idx = idx.reshape(-1, tokens_per_window)
         shuffle_idx = torch.randperm(num_total_windows)
         idx = idx[shuffle_idx]
         # n (wh ww) -> (n wh ww)
         idx = idx.reshape(-1)
 
         context_idx, target_idx = (
-            idx[: num_context_windows * window_size],
-            idx[num_context_windows * window_size :],
+            idx[: num_context_windows * tokens_per_window],
+            idx[num_context_windows * tokens_per_window :],
         )
 
         # nph npw d -> (nph npw) d
@@ -428,12 +430,18 @@ def get_context_target_dataset(
     resize_multiple_of = patch_size * mask_window_size
 
     # Between 1 and half are context tokens
-    max_target_sequence_length = (max_side_length // patch_size) ** 2 - 1
+    max_target_sequence_length = (max_side_length // patch_size) ** 2
     max_target_sequence_length += int(
         round(max_target_sequence_length / num_tokens_per_register_token)
     )
 
     max_context_sequence_length = max_target_sequence_length // 2
+    # Separate max length for the packer than the patcher, because register
+    # tokens are added after the patcher
+    packer_max_context_sequence_length = max_context_sequence_length
+    max_context_sequence_length -= int(
+        round(max_context_sequence_length / num_tokens_per_register_token)
+    )
 
     tensorset_pad_value_dict = {
         "position_ids": 0,
@@ -482,7 +490,7 @@ def get_context_target_dataset(
         .map(ToTensorSet())
         .compose(
             packed_x_y(
-                max_context_sequence_length,
+                packer_max_context_sequence_length,
                 max_target_sequence_length,
                 packer_batch_size,
                 pad_value_dict=tensorset_pad_value_dict,
