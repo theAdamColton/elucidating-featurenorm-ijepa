@@ -352,22 +352,12 @@ class Predictor(nn.Module):
         self.hidden_size = config.block_config.mlp_config.embed_dim
         self.head_dim = config.block_config.attention_config.head_dim
 
-        self.proj_in = nn.Linear(config.input_size, self.hidden_size)
+        if config.input_size == self.hidden_size:
+            self.proj_in = nn.Identity()
+        else:
+            self.proj_in = nn.Linear(config.input_size, self.hidden_size)
+
         self.temb = TimestepEmbedder(self.hidden_size)
-
-        self.reg_emb = nn.Parameter(
-            torch.empty(config.max_num_register_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.reg_emb, std=0.02)
-
-        self.h_emb = nn.Parameter(
-            torch.empty(config.max_num_height_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.h_emb, std=0.02)
-        self.w_emb = nn.Parameter(
-            torch.empty(config.max_num_width_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.w_emb, std=0.02)
 
         self.pred_emb = nn.Parameter(torch.empty(self.hidden_size))
         init.trunc_normal_(self.pred_emb, std=0.02)
@@ -399,27 +389,18 @@ class Predictor(nn.Module):
 
         x = self.proj_in(x)
 
-        sample_ids, register_ids, position_ids = (
+        sample_ids, _, position_ids = (
             token_ids[..., 0],
             token_ids[..., 1],
             token_ids[..., 2:],
         )
 
-        is_register = register_ids != MASK_SEQUENCE_ID
-        register_ids.masked_fill_(~is_register, 0)
-        reg_emb = self.reg_emb[register_ids]
-        reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
-        x = x + reg_emb
-
-        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
-        x = x + pos_emb
+        # zero out tokens to predict
+        x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
         p_emb = einx.multiply("d, b s -> b s d", self.pred_emb, prediction_mask)
 
         x = x + p_emb
-
-        # zero out tokens to predict
-        x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
         temb = self.temb(t)
 
@@ -457,10 +438,6 @@ class IJEPADepthSmartConfig:
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
 
-    should_tie_predictor_temb: bool = True
-    should_tie_predictor_pos_emb: bool = True
-    should_tie_predictor_reg_emb: bool = True
-
 
 class IJEPADepthSmart(nn.Module):
     def __init__(self, config=IJEPADepthSmartConfig()):
@@ -477,14 +454,6 @@ class IJEPADepthSmart(nn.Module):
             self.running_batchnorm = RunningBatchNorm(self.encoder.hidden_size)
 
         self.predictor = Predictor(config.predictor)
-
-        if config.should_tie_predictor_temb:
-            self.predictor.temb = self.encoder.temb
-        if config.should_tie_predictor_pos_emb:
-            self.predictor.h_emb = self.encoder.h_emb
-            self.predictor.w_emb = self.encoder.w_emb
-        if config.should_tie_predictor_reg_emb:
-            self.predictor.reg_emb = self.encoder.reg_emb
 
     def forward(
         self,
