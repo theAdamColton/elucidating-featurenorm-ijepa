@@ -311,10 +311,15 @@ class ContextTargetSplitter:
         max_num_context_windows = self.max_context_sequence_length // tokens_per_window
         max_num_context_windows = min(num_total_windows - 1, max_num_context_windows)
 
+        min_num_context_windows = int(round(max_num_context_windows * 0.25))
+        min_num_context_windows = max(min_num_context_windows, 1)
+
         if num_total_windows == 2:
             num_context_windows = 1
         else:
-            num_context_windows = random.randint(1, max_num_context_windows)
+            num_context_windows = random.randint(
+                min_num_context_windows, max_num_context_windows
+            )
 
         idx = torch.arange(nph * npw)
         idx = idx.reshape(nph, npw)
