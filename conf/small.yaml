@@ -24,15 +24,15 @@ conf:
       norm_out_mode: disabled
     predictor:
       input_size: 384
-      num_transformer_blocks: 2
+      num_transformer_blocks: 6
       block_config:
         mlp_config:
-          embed_dim: 384
+          embed_dim: 256
           num_experts: 8
         attention_config:
-          embed_dim: 384
+          embed_dim: 256
           head_dim: 64
-          num_attention_heads: 6
+          num_attention_heads: 4
     predictor_batch_repeat: 8
     depthsmart_mode: disabled
     target_norm_mode: running-batchnorm
