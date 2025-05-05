@@ -128,8 +128,12 @@ def main(conf: MainConfig = MainConfig()):
 
                 device = x_seq["patches"].device
 
-                x_sample_mask = x_seq["sequence_ids"] == j & ~x_seq["is_register"]
-                y_sample_mask = y_seq["sequence_ids"] == j & ~y_seq["is_register"]
+                x_sample_mask = (x_seq["sequence_ids"] == j) & (
+                    x_seq["position_ids"][..., 0] == MASK_SEQUENCE_ID
+                )
+                y_sample_mask = (y_seq["sequence_ids"] == j) & (
+                    y_seq["position_ids"][..., 0] == MASK_SEQUENCE_ID
+                )
 
                 x_sample = x_seq.iloc[x_sample_mask]
                 y_sample = y_seq.iloc[y_sample_mask]
@@ -137,8 +141,8 @@ def main(conf: MainConfig = MainConfig()):
                 assert x_sample.size(0) > 0
                 assert y_sample.size(0) > 0
 
-                x_sample_position_ids = x_sample["position_ids"][-2:]
-                y_sample_position_ids = y_sample["position_ids"][-2:]
+                x_sample_position_ids = x_sample["position_ids"][:, -2:]
+                y_sample_position_ids = y_sample["position_ids"][:, -2:]
 
                 all_position_ids = torch.cat(
                     (x_sample_position_ids, y_sample_position_ids), 0
@@ -156,13 +160,13 @@ def main(conf: MainConfig = MainConfig()):
                 for k in range(y_sample.size(0)):
                     token = y_sample.iloc[k]
                     patch = token["patches"]
-                    *_, hid, wid = token["position_ids"] - min_ph_pw
+                    hid, wid = token["position_ids"][-2:] - min_ph_pw
                     image[hid, wid] = patch
 
                 for k in range(x_sample.size(0)):
                     token = x_sample.iloc[k]
                     patch = token["patches"]
-                    *_, hid, wid = token["position_ids"] - min_ph_pw
+                    hid, wid = token["position_ids"][-2:] - min_ph_pw
                     image[hid, wid] = patch
 
                 image = einx.rearrange(
