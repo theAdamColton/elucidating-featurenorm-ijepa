@@ -85,15 +85,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cabbage-patch"
-version = "0.0.1"
-source = { git = "https://github.com/theAdamColton/cabbage-patch#d9a7d25fa6a5e50a2d4b8cd3bce9fcf1239c64bc" }
-dependencies = [
-    { name = "tensorset" },
-    { name = "torch" },
-]
-
-[[package]]
 name = "certifi"
 version = "2025.4.26"
 source = { registry = "https://pypi.org/simple" }
@@ -464,11 +455,11 @@ name = "ijepa-depthsmart"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "cabbage-patch" },
     { name = "einx" },
     { name = "jsonargparse", extra = ["signatures"] },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "tensorset" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -483,11 +474,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cabbage-patch", git = "https://github.com/theAdamColton/cabbage-patch" },
     { name = "einx", specifier = ">=0.3.0" },
     { name = "jsonargparse", extras = ["signatures"], specifier = ">=4.38.0" },
     { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "numpy", specifier = ">=2.2.5" },
+    { name = "tensorset", specifier = ">=0.4.2" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "torchvision", specifier = ">=0.22.0" },
     { name = "transformers", specifier = ">=4.51.3" },

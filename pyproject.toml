@@ -5,11 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "cabbage-patch",
     "einx>=0.3.0",
     "jsonargparse[signatures]>=4.38.0",
     "matplotlib>=3.10.1",
     "numpy>=2.2.5",
+    "tensorset>=0.4.2",
     "torch>=2.7.0",
     "torchvision>=0.22.0",
     "transformers>=4.51.3",
@@ -21,6 +21,3 @@ dependencies = [
 dev = [
     "bpython>=0.25",
 ]
-
-[tool.uv.sources]
-cabbage-patch = { git = "https://github.com/theAdamColton/cabbage-patch" }

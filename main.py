@@ -14,9 +14,9 @@ import torch
 from dataclasses import dataclass, field, asdict
 import wandb
 
-from dataset import get_context_target_dataset
+from src.dataset import get_context_target_dataset
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
-from validate import validate
+from src.validate import validate
 
 
 @dataclass

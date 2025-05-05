@@ -1,7 +1,6 @@
 import random
 import numpy as np
 import torch
-import torchvision
 import webdataset as wds
 import tensorset as ts
 import PIL.Image
@@ -59,15 +58,24 @@ class ImageResizer:
     def __init__(self, size=256):
         self.size = size
 
-    def forward(self, row):
+    def __call__(self, row):
         x = row.pop("pixel_values")
-        _, og_h, og_w = x.shape
+        og_w, og_h = x.size
         crop_size = min(og_h, og_w)
-        x = x.convert("RGB")
+        if og_h > og_w:
+            amount_to_crop = og_h - crop_size
+            box = (0, amount_to_crop // 2, og_w, amount_to_crop // 2 + crop_size)
+        else:
+            amount_to_crop = og_w - crop_size
+            box = (amount_to_crop // 2, 0, amount_to_crop // 2 + crop_size, og_h)
+
+        x = x.convert("RGB").resize(
+            size=(self.size, self.size),
+            box=box,
+            resample=PIL.Image.Resampling.BILINEAR,
+        )
         x = np.array(x)
         x = torch.from_numpy(x)
-        x = torchvision.transforms.CenterCrop(crop_size)(x)
-        x = torchvision.transforms.Resize((self.size, self.size))(x)
         row["pixel_values"] = x
         return row
 
@@ -92,6 +100,7 @@ class ImagePatcher:
         x = patch(x, self.patch_size)
         # nph npw ph pw c -> nph npw (ph pw c)
         d = self.patch_size**2 * self.image_channels
+
         x = x.reshape(x.shape[0], x.shape[1], d)
 
         position_ids = torch.meshgrid(
@@ -107,7 +116,7 @@ class ImagePatcher:
 
 class TokenFlattener:
     def __call__(self, row):
-        x = row("pixel_values")
+        x = row.pop("pixel_values")
         position_ids = row.pop("position_ids")
 
         x = x.reshape(-1, x.shape[-1])
@@ -144,7 +153,10 @@ class RegisterTokenAdder:
         x = torch.cat((padding, x))
 
         padding = torch.zeros(
-            num_register_tokens, nd, dtype=position_ids.dtype, device=position_ids.dtype
+            num_register_tokens,
+            nd,
+            dtype=position_ids.dtype,
+            device=position_ids.device,
         )
         position_ids = torch.cat((padding, position_ids))
 
@@ -163,7 +175,7 @@ class RegisterTokenAdder:
 
 class SequenceIDAdder:
     def __call__(self, row):
-        token_ids = row.pop("token_ids")
+        token_ids = row.pop("position_ids")
 
         s, _ = token_ids.shape
 
@@ -217,7 +229,7 @@ class ImageSizeFilter:
         self.min_side_length = min_side_length
 
     def __call__(self, row):
-        h, w = row["pixel_values"].size
+        w, h = row["pixel_values"].size
 
         side_length = int((h + w) / 2)
         return side_length > self.min_side_length
@@ -244,7 +256,7 @@ class RandomImageResizer:
 
         x = row.pop("pixel_values")
 
-        input_h, input_w = x.size
+        input_w, input_h = x.size
         input_side_length = (input_h + input_w) / 2
 
         sampled_side_length = random.randint(min_side_length, max_side_length)
@@ -329,8 +341,10 @@ class ContextTargetSplitter:
             position_ids[target_idx],
         )
 
-        row["x_patches"] = ts.TensorSet(patches=x, position_ids=x_position_ids)
-        row["y_patches"] = ts.TensorSet(patches=y, position_ids=y_position_ids)
+        row["x_patches"] = x
+        row["x_position_ids"] = x_position_ids
+        row["y_patches"] = y
+        row["y_position_ids"] = y_position_ids
 
         return row
 
@@ -382,6 +396,17 @@ def _packed_x_y(
 
 
 packed_x_y = wds.pipelinefilter(_packed_x_y)
+
+
+class ToTensorSet:
+    def __call__(self, row):
+        x = row.pop("x_patches")
+        x_position_ids = row.pop("x_position_ids")
+        row["x_patches"] = ts.TensorSet(patches=x, position_ids=x_position_ids)
+        y = row.pop("y_patches")
+        y_position_ids = row.pop("y_position_ids")
+        row["y_patches"] = ts.TensorSet(patches=y, position_ids=y_position_ids)
+        return row
 
 
 def get_context_target_dataset(
@@ -454,6 +479,7 @@ def get_context_target_dataset(
                 position_id_column_name="y_position_ids",
             )
         )
+        .map(ToTensorSet())
         .compose(
             packed_x_y(
                 max_context_sequence_length,
@@ -464,7 +490,9 @@ def get_context_target_dataset(
         )
         .to_tuple("x_patches", "y_patches")
         .shuffle(shuffle_size_packer)
-        .batched(batch_size // packer_batch_size, partial=False)
+        .batched(
+            batch_size // packer_batch_size, collation_fn=collation_fn, partial=False
+        )
     )
 
     return dataset

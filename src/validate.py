@@ -11,7 +11,7 @@ from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
 
-from dataset import get_test_dataset
+from src.dataset import get_test_dataset
 from src.model import IJEPADepthSmart
 
 
@@ -96,14 +96,14 @@ def validate(
                 pass
 
                 for batch in tqdm(dl, desc="embedding val dataset"):
-                    patches = batch["patches"]
-                    label = batch["label"]
+                    pixel_values = batch["pixel_values"]
+                    labels = batch["labels"]
                     token_ids = batch["token_ids"]
 
-                    b, s, d = patches.shape
+                    b, s, d = pixel_values.shape
 
-                    patches = patches.to(device=device, dtype=dtype)
-                    patches = (patches / 255) * 2 - 1
+                    pixel_values = pixel_values.to(device=device, dtype=dtype)
+                    pixel_values = (pixel_values / 255) * 2 - 1
 
                     token_ids = token_ids.to(device)
 
@@ -118,7 +118,7 @@ def validate(
                         with autocast_fn():
                             with torch.inference_mode():
                                 _, layer_features = encoder(
-                                    patches,
+                                    pixel_values,
                                     t,
                                     token_ids,
                                     return_all_layer_features=True,
@@ -136,7 +136,7 @@ def validate(
 
                             with autocast_fn():
                                 with torch.inference_mode():
-                                    features, *_ = encoder(patches, t, token_ids)
+                                    features, *_ = encoder(pixel_values, t, token_ids)
                             features = einx.mean("b [s] d", features)
                             layer_features.append(features)
 
@@ -148,7 +148,7 @@ def validate(
                         writer.write(
                             {
                                 "__key__": uuid.uuid4().hex,
-                                "label.cls": label[i].item(),
+                                "label.cls": labels[i].item(),
                                 "features.npy": layer_features[i],
                             }
                         )
