@@ -231,21 +231,32 @@ def main(conf: MainConfig = MainConfig()):
         if conf.should_compile:
             model = torch.compile(model)
 
+        checkpoint_folder_path = (
+            Path("checkpoints") / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         def save():
-            checkpoint_path = (
-                Path("checkpoints")
-                / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.pt"
-            )
-            checkpoint_path.parent.mkdir(exist_ok=True)
+            checkpoint_folder_path.mkdir(exist_ok=True)
+
+            existing_checkpoints = list(checkpoint_folder_path.iterdir())
+            existing_checkpoints.sort()
+            max_num_checkpoints = 5
+
+            checkpoints_to_delete = existing_checkpoints[:max_num_checkpoints]
+
+            for existing_checkpoint in checkpoints_to_delete:
+                print("Deleting checkpoint", existing_checkpoint)
+                existing_checkpoint.unlink()
+
             torch.save(
                 {
                     "training_state": training_state,
                     "model": model,
                     "optimizer": optimizer,
                 },
-                str(checkpoint_path),
+                str(checkpoint_folder_path),
             )
-            print("Saved to ", checkpoint_path)
+            print("Saved to ", checkpoint_folder_path)
 
         @contextmanager
         def autocast_fn():
