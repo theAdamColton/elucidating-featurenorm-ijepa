@@ -13,6 +13,7 @@ import random
 import torch
 from dataclasses import dataclass, field, asdict
 import wandb
+from accelerate import Accelerator
 
 from src.dataset import get_context_target_dataset
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
@@ -183,6 +184,7 @@ def main(conf: MainConfig = MainConfig()):
 
     elif conf.mode == "validate":
         # TODO load model
+        raise NotImplementedError()
         accuracies = validate(
             model=model,
             image_column_name=conf.image_column_name,
@@ -205,6 +207,8 @@ def main(conf: MainConfig = MainConfig()):
         print("ACCURACIES", accuracies)
 
     elif conf.mode == "train":
+        # accelerator = Accelerator()
+
         train_dataloader = DataLoader(
             dataset, num_workers=conf.num_workers, batch_size=None
         )

@@ -666,6 +666,10 @@ class IJEPADepthSmart(nn.Module):
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")
 
+        # TODO
+        # The predictor here is predicting the teacher's register tokens
+        # Should these registers be upweighted? Or excluded from loss
+
         target_sequence_ids = token_ids[:, num_ctx_tokens:, 0]
         not_padding_mask = target_sequence_ids != MASK_SEQUENCE_ID
         loss = loss[not_padding_mask].mean()

@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "accelerate>=1.6.0",
     "einx>=0.3.0",
     "jsonargparse[signatures]>=4.38.0",
     "matplotlib>=3.10.1",
