@@ -293,7 +293,7 @@ class Encoder(nn.Module):
         )
 
         is_register = register_ids != MASK_SEQUENCE_ID
-        register_ids.masked_fill_(~is_register, 0)
+        register_ids = register_ids.masked_fill(~is_register, 0)
         reg_emb = self.reg_emb[register_ids]
         reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
         x = x + reg_emb
@@ -355,6 +355,9 @@ class Encoder(nn.Module):
             return x, target_hidden_states
 
         elif return_all_layer_features:
+            # TODO
+            # Don't want this to contribute to RunningBatchNorm estimations
+            all_layer_features = self.norm_out(all_layer_features)
             return x, all_layer_features
 
         return (x,)
@@ -374,6 +377,8 @@ class PredictorConfig:
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
 
+    should_zero_ctx_register_tokens: bool = True
+
 
 class Predictor(nn.Module):
     def __init__(self, config=PredictorConfig()):
@@ -389,6 +394,11 @@ class Predictor(nn.Module):
             self.proj_in = nn.Linear(config.input_size, self.hidden_size)
 
         self.temb = TimestepEmbedder(self.hidden_size)
+
+        self.reg_emb = nn.Parameter(
+            torch.empty(config.max_num_register_tokens, self.hidden_size)
+        )
+        init.trunc_normal_(self.reg_emb, std=0.02)
 
         self.h_emb = nn.Parameter(
             torch.empty(config.max_num_height_tokens, self.hidden_size)
@@ -432,7 +442,7 @@ class Predictor(nn.Module):
 
         x = self.proj_in(x)
 
-        sample_ids, _, position_ids = (
+        sample_ids, register_ids, position_ids = (
             token_ids[..., 0],
             token_ids[..., 1],
             token_ids[..., 2:],
@@ -440,6 +450,17 @@ class Predictor(nn.Module):
 
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
+
+        is_register = register_ids != MASK_SEQUENCE_ID
+        register_ids = register_ids.masked_fill(~is_register, 0)
+        reg_emb = self.reg_emb[register_ids]
+        reg_emb = reg_emb * is_register.unsqueeze(-1)
+
+        if config.should_zero_ctx_register_tokens:
+            # zero out context register tokens
+            x = x * ~is_register.unsqueeze(-1)
+
+        x = x + reg_emb
 
         pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
         x = x + pos_emb
@@ -478,6 +499,8 @@ class IJEPADepthSmartConfig:
 
     depthsmart_mode: Literal["random-layers", "disabled", "noise"] = "random-layers"
     num_denoiser_timesteps: int = 1000
+
+    should_predict_register_tokens: bool = False
 
     target_norm_mode: Literal[
         "layernorm", "disabled", "batchnorm", "running-batchnorm"
@@ -671,7 +694,12 @@ class IJEPADepthSmart(nn.Module):
         # Should these registers be upweighted? Or excluded from loss
 
         target_sequence_ids = token_ids[:, num_ctx_tokens:, 0]
-        not_padding_mask = target_sequence_ids != MASK_SEQUENCE_ID
-        loss = loss[not_padding_mask].mean()
+        target_register_ids = token_ids[:, num_ctx_tokens:, 1]
+        is_target_mask = target_sequence_ids != MASK_SEQUENCE_ID
+
+        if not config.should_predict_register_tokens:
+            is_target_mask = is_target_mask & (target_register_ids == MASK_SEQUENCE_ID)
+
+        loss = loss[is_target_mask].mean()
 
         return dict(loss=loss, smooth_rank=smooth_rank)

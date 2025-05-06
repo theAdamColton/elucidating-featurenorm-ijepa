@@ -125,13 +125,6 @@ def validate(
                                     return_all_layer_features=True,
                                 )
 
-                        # TODO
-                        # Does this norm strategy work for non-normalized
-                        # encoder features?
-                        layer_features = F.layer_norm(
-                            layer_features, (layer_features.shape[-1],)
-                        )
-
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 
                     elif validation_depthsmart_mode == "learned":
