@@ -231,6 +231,22 @@ def main(conf: MainConfig = MainConfig()):
         if conf.should_compile:
             model = torch.compile(model)
 
+        def save():
+            checkpoint_path = (
+                Path("checkpoints")
+                / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.pt"
+            )
+            checkpoint_path.parent.mkdir(exist_ok=True)
+            torch.save(
+                {
+                    "training_state": training_state,
+                    "model": model,
+                    "optimizer": optimizer,
+                },
+                str(checkpoint_path),
+            )
+            print("Saved to ", checkpoint_path)
+
         @contextmanager
         def autocast_fn():
             with torch.autocast(device.type, dtype):
@@ -408,20 +424,9 @@ def main(conf: MainConfig = MainConfig()):
             if conf.test_mode:
                 break
 
-        checkpoint_path = (
-            Path("checkpoints") / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.pt"
-        )
-        checkpoint_path.parent.mkdir(exist_ok=True)
+            save()
 
-        torch.save(
-            {
-                "training_state": training_state,
-                "model": model,
-                "optimizer": optimizer,
-            },
-            str(checkpoint_path),
-        )
-        print("Saved to ", checkpoint_path)
+        save()
 
 
 if __name__ == "__main__":
