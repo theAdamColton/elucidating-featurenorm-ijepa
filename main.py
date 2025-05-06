@@ -248,15 +248,17 @@ def main(conf: MainConfig = MainConfig()):
                 print("Deleting checkpoint", existing_checkpoint)
                 existing_checkpoint.unlink()
 
+            save_path = checkpoint_folder_path / f"{training_state['epoch']:05}.pt"
+
             torch.save(
                 {
                     "training_state": training_state,
                     "model": model,
                     "optimizer": optimizer,
                 },
-                str(checkpoint_folder_path),
+                str(save_path),
             )
-            print("Saved to ", checkpoint_folder_path)
+            print("Saved to ", save_path)
 
         @contextmanager
         def autocast_fn():
