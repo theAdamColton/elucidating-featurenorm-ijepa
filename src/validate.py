@@ -75,6 +75,7 @@ def validate(
         label_column_name=label_column_name,
         batch_size=batch_size,
         image_size=validation_image_size,
+        num_tokens_per_register_token=num_tokens_per_register_token,
         patch_size=patch_size,
     )
     val_test_dataset = get_test_dataset(
@@ -123,6 +124,13 @@ def validate(
                                     token_ids,
                                     return_all_layer_features=True,
                                 )
+
+                        # TODO
+                        # Does this norm strategy work for non-normalized
+                        # encoder features?
+                        layer_features = F.layer_norm(
+                            layer_features, (layer_features.shape[-1],)
+                        )
 
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 

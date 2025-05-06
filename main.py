@@ -261,14 +261,14 @@ def main(conf: MainConfig = MainConfig()):
                     x_patches = x_patches.to(
                         device=device, dtype=dtype, non_blocking=True
                     )
-                    x_patches = (x_patches / 255) * 2 - 1
                     y_patches = y_patches.to(
                         device=device, dtype=dtype, non_blocking=True
                     )
-                    y_patches = (y_patches / 255) * 2 - 1
-
                     x_token_ids = x_token_ids.to(device, non_blocking=True)
                     y_token_ids = y_token_ids.to(device, non_blocking=True)
+
+                    x_patches = (x_patches / 255) * 2 - 1
+                    y_patches = (y_patches / 255) * 2 - 1
 
                     interp = min(
                         1, training_state["global_step"] / conf.interp_warmup_steps
