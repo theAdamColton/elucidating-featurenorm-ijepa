@@ -43,7 +43,11 @@ class MainConfig:
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_probe_batch_size: int = 2048
-    validation_depthsmart_mode: Literal["learned", "extract-layers"] = "extract-layers"
+    validation_depthsmart_mode: Literal["learned", "extract-layers", "lastlayer"] = (
+        "extract-layers"
+    )
+
+    resume_path: str | None = None
 
     test_mode: bool = False
 
@@ -97,6 +101,27 @@ def main(conf: MainConfig = MainConfig()):
         packer_batch_size=conf.packer_batch_size,
         patch_size=patch_size,
     )
+
+    training_state = dict(global_step=0, epoch=0)
+
+    model = IJEPADepthSmart(conf.model).to(device)
+    trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
+
+    optimizer = torch.optim.AdamW(
+        trainable_params, lr=conf.start_lr, betas=(0.9, 0.95), weight_decay=0.05
+    )
+
+    if conf.resume_path is not None:
+
+        def _load():
+            d = torch.load(conf.resume_path, map_location=device, weights_only=False)
+            model.load_state_dict(d["model"]._orig_mod.state_dict())
+            # model.load_state_dict(d["model"])
+            training_state.update(d["training_state"])
+            optimizer.load_state_dict(d["optimizer"].state_dict())
+            # optimizer.load_state_dict(d["optimizer"])
+
+        _load()
 
     if conf.mode == "make-viz":
         sample = next(iter(dataset))
@@ -183,8 +208,6 @@ def main(conf: MainConfig = MainConfig()):
                 print("saved to ", image_save_path)
 
     elif conf.mode == "validate":
-        # TODO load model
-        raise NotImplementedError()
         accuracies = validate(
             model=model,
             image_column_name=conf.image_column_name,
@@ -211,12 +234,6 @@ def main(conf: MainConfig = MainConfig()):
 
         train_dataloader = DataLoader(
             dataset, num_workers=conf.num_workers, batch_size=None
-        )
-        model = IJEPADepthSmart(conf.model).to(device)
-        trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
-
-        optimizer = torch.optim.AdamW(
-            trainable_params, lr=conf.start_lr, betas=(0.9, 0.95), weight_decay=0.05
         )
 
         conf_d = asdict(conf)
@@ -253,8 +270,12 @@ def main(conf: MainConfig = MainConfig()):
             torch.save(
                 {
                     "training_state": training_state,
-                    "model": model,
-                    "optimizer": optimizer,
+                    "model": (
+                        model._orig_mod.state_dict()
+                        if hasattr(model, "_orig_mod")
+                        else model.state_dict()
+                    ),
+                    "optimizer": optimizer.state_dict(),
                 },
                 str(save_path),
             )
@@ -264,8 +285,6 @@ def main(conf: MainConfig = MainConfig()):
         def autocast_fn():
             with torch.autocast(device.type, dtype):
                 yield
-
-        training_state = dict(global_step=0, epoch=0)
 
         for epoch in range(training_state["epoch"], conf.num_epochs):
 

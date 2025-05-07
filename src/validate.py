@@ -19,7 +19,9 @@ class MultiDepthClassifier(nn.Module):
     def __init__(self, num_depth, num_classes, num_features):
         super().__init__()
         self.weights = nn.Parameter(torch.empty(num_depth, num_classes, num_features))
-        nn.init.trunc_normal_(self.weights, std=0.02)
+        nn.init.uniform_(
+            self.weights, -1 / (num_features) ** 0.5, 1 / (num_features) ** 0.5
+        )
         self.biases = nn.Parameter(torch.zeros(num_depth, num_classes))
         self.num_depth = num_depth
 
@@ -52,7 +54,9 @@ def validate(
     validation_probe_lr: float = 1e-3,
     validation_probe_batch_size: int = 2048,
     validation_train_epochs: int = 50,
-    validation_depthsmart_mode: Literal["learned", "extract-layers"] = "extract-layers",
+    validation_depthsmart_mode: Literal[
+        "learned", "extract-layers", "lastlayer"
+    ] = "extract-layers",
     num_tokens_per_register_token: int = 32,
 ):
     encoder = model.ema_encoder
@@ -127,6 +131,27 @@ def validate(
 
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 
+                    elif validation_depthsmart_mode == "lastlayer":
+                        # Full depth
+                        t = torch.full(
+                            (b, s),
+                            num_feature_depth - 1,
+                            device=device,
+                        )
+
+                        with autocast_fn():
+                            with torch.inference_mode():
+                                layer_features, *_ = encoder(
+                                    pixel_values,
+                                    t,
+                                    token_ids,
+                                    return_all_layer_features=True,
+                                )
+
+                        layer_features = einx.mean(
+                            "b s d -> b one d", layer_features, one=1
+                        )
+
                     elif validation_depthsmart_mode == "learned":
                         # Repeating batch to condition on all depths
                         # results in OOM!
@@ -164,7 +189,9 @@ def validate(
         test_tar_urls = _embed_dataset(val_test_dataset, "test-")
 
         classifier = MultiDepthClassifier(
-            num_feature_depth, num_classes, num_features
+            1 if validation_depthsmart_mode == "lastlayer" else num_feature_depth,
+            num_classes,
+            num_features,
         ).to(device)
 
         optim = torch.optim.AdamW(
