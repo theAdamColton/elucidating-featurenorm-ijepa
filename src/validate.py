@@ -87,11 +87,12 @@ def validate(
     )
     val_test_dataset = get_test_dataset(
         dataset_pattern=val_dataset_pattern,
-        shuffle=True,
+        shuffle=False,
         image_column_name=image_column_name,
         label_column_name=label_column_name,
         batch_size=batch_size,
         image_size=validation_image_size,
+        num_tokens_per_register_token=num_tokens_per_register_token,
         patch_size=patch_size,
     )
 

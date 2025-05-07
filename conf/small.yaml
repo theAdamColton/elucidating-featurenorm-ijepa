@@ -38,3 +38,4 @@ conf:
     target_norm_mode: layernorm
   mode: train
   validate_every_num_epochs: 4
+  num_tokens_per_register_token: 128
