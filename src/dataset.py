@@ -72,7 +72,7 @@ class ImageResizer:
         x = x.convert("RGB").resize(
             size=(self.size, self.size),
             box=box,
-            resample=PIL.Image.Resampling.BILINEAR,
+            resample=PIL.Image.Resampling.BICUBIC,
         )
         x = np.array(x)
         x = torch.from_numpy(x)
@@ -275,7 +275,7 @@ class RandomImageResizer:
             factor = sum(size // multiple_of for size in image_crop_size)
 
         x = x.convert("RGB").resize(
-            image_crop_size, resample=PIL.Image.Resampling.BILINEAR
+            image_crop_size, resample=PIL.Image.Resampling.BICUBIC
         )
         x = torch.from_numpy(np.array(x))
 
