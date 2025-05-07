@@ -213,9 +213,9 @@ class EncoderConfig:
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 64
-    norm_out_mode: Literal["disabled", "layernorm", "batchnorm", "dyntanh"] = (
-        "layernorm"
-    )
+    norm_out_mode: Literal[
+        "disabled", "adanorm", "layernorm", "batchnorm", "dyntanh"
+    ] = "layernorm"
 
 
 class Encoder(nn.Module):
@@ -261,6 +261,8 @@ class Encoder(nn.Module):
             self.norm_out = RunningBatchNorm(self.hidden_size)
         elif config.norm_out_mode == "dyntanh":
             self.norm_out = DynTanh(self.hidden_size)
+        elif config.norm_out_mode == "adanorm":
+            self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
         else:
             raise ValueError(config.norm_out_mode)
 
@@ -348,6 +350,8 @@ class Encoder(nn.Module):
 
         if config.norm_out_mode == "batchnorm":
             x = self.norm_out(x, sample_ids != MASK_SEQUENCE_ID)
+        elif config.norm_out_mode == "adanorm":
+            x = self.norm_out(x, temb)
         else:
             x = self.norm_out(x)
 
@@ -355,9 +359,13 @@ class Encoder(nn.Module):
             return x, target_hidden_states
 
         elif return_all_layer_features:
-            # TODO
-            # Don't want this to contribute to RunningBatchNorm estimations
-            all_layer_features = self.norm_out(all_layer_features)
+            if config.norm_out_mode == "adanorm":
+                all_layer_features = self.norm_out(all_layer_features, temb)
+            else:
+                # TODO
+                # Don't want this to contribute to RunningBatchNorm estimations
+                all_layer_features = self.norm_out(all_layer_features)
+
             return x, all_layer_features
 
         return (x,)
