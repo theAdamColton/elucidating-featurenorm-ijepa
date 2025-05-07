@@ -66,7 +66,7 @@ class MainConfig:
     label_column_name: str = "cls"
     num_classes: int = 1000
 
-    num_tokens_per_register_token: int = 32
+    num_register_tokens: int = 8
 
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()
@@ -101,7 +101,7 @@ def main(conf: MainConfig = MainConfig()):
         label_column_name=conf.label_column_name,
         batch_size=conf.batch_size,
         packer_batch_size=conf.packer_batch_size,
-        num_tokens_per_register_token=conf.num_tokens_per_register_token,
+        num_register_tokens=conf.num_register_tokens,
         patch_size=patch_size,
     )
 
@@ -229,7 +229,7 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
             validation_depthsmart_mode=conf.validation_depthsmart_mode,
-            num_tokens_per_register_token=conf.num_tokens_per_register_token,
+            num_register_tokens=conf.num_register_tokens,
         )
         print("ACCURACIES", accuracies)
 
@@ -428,7 +428,7 @@ def main(conf: MainConfig = MainConfig()):
                     validation_probe_batch_size=conf.validation_probe_batch_size,
                     validation_train_epochs=conf.validation_train_epochs,
                     validation_depthsmart_mode=conf.validation_depthsmart_mode,
-                    num_tokens_per_register_token=conf.num_tokens_per_register_token,
+                    num_register_tokens=conf.num_register_tokens,
                 )
 
                 gc.collect()

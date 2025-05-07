@@ -131,23 +131,22 @@ class TokenFlattener:
 class RegisterTokenAdder:
     def __init__(
         self,
-        num_tokens_per_register_token=32,
+        num_register_tokens=8,
         token_column_name="pixel_values",
         position_id_column_name="position_ids",
     ):
-        self.num_tokens_per_register_token = num_tokens_per_register_token
+        self.num_register_tokens = num_register_tokens
         self.token_column_name = token_column_name
         self.position_id_column_name = position_id_column_name
 
     def __call__(self, row):
+        num_register_tokens = self.num_register_tokens
+
         x = row.pop(self.token_column_name)
         position_ids = row.pop(self.position_id_column_name)
 
         s, d = x.shape
         s, nd = position_ids.shape
-
-        num_register_tokens = int(round(s // self.num_tokens_per_register_token))
-        num_register_tokens = max(1, num_register_tokens)
 
         padding = torch.zeros(num_register_tokens, d, dtype=x.dtype, device=x.device)
         x = torch.cat((padding, x))
@@ -198,7 +197,7 @@ def get_test_dataset(
     batch_size: int = 256,
     image_size: int = 256,
     patch_size: int = 16,
-    num_tokens_per_register_token: int = 32,
+    num_register_tokens: int = 8,
     shuffle_size_batches: int = 16,
 ):
     dataset = (
@@ -213,7 +212,7 @@ def get_test_dataset(
         .map(ImageResizer(image_size))
         .map(ImagePatcher(patch_size))
         .map(TokenFlattener())
-        .map(RegisterTokenAdder(num_tokens_per_register_token))
+        .map(RegisterTokenAdder(num_register_tokens))
         .map(SequenceIDAdder())
         .batched(batch_size)
     )
@@ -429,24 +428,18 @@ def get_context_target_dataset(
     min_side_length: int = 64,
     patch_size: int = 16,
     mask_window_size: int = 2,
-    num_tokens_per_register_token: int = 32,
+    num_register_tokens: int = 8,
 ):
 
     resize_multiple_of = patch_size * mask_window_size
 
+    max_sequence_length = (max_side_length // patch_size) ** 2
     # Between 1 and half are context tokens
-    max_target_sequence_length = (max_side_length // patch_size) ** 2
-    max_target_sequence_length += int(
-        round(max_target_sequence_length / num_tokens_per_register_token)
-    )
+    max_target_sequence_length = max_sequence_length - 1
 
-    max_context_sequence_length = max_target_sequence_length // 2
-    # Separate max length for the packer than the patcher, because register
-    # tokens are added after the patcher
-    packer_max_context_sequence_length = max_context_sequence_length
-    max_context_sequence_length -= int(
-        round(max_context_sequence_length / num_tokens_per_register_token)
-    )
+    max_context_sequence_length = int(round(max_target_sequence_length / 2))
+    # Register tokens are added to the context after being patched
+    packer_context_sequence_length = max_context_sequence_length + num_register_tokens
 
     tensorset_pad_value_dict = {
         "position_ids": 0,
@@ -478,16 +471,17 @@ def get_context_target_dataset(
                 window_size=mask_window_size,
             )
         )
+        # Add register tokens only to the context
         .map(
             RegisterTokenAdder(
-                num_tokens_per_register_token=num_tokens_per_register_token,
+                num_register_tokens=num_register_tokens,
                 token_column_name="x_patches",
                 position_id_column_name="x_position_ids",
             )
         )
         .map(
             RegisterTokenAdder(
-                num_tokens_per_register_token=num_tokens_per_register_token,
+                num_register_tokens=0,
                 token_column_name="y_patches",
                 position_id_column_name="y_position_ids",
             )
@@ -495,7 +489,7 @@ def get_context_target_dataset(
         .map(ToTensorSet())
         .compose(
             packed_x_y(
-                packer_max_context_sequence_length,
+                packer_context_sequence_length,
                 max_target_sequence_length,
                 packer_batch_size,
                 pad_value_dict=tensorset_pad_value_dict,

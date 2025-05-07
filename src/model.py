@@ -212,7 +212,7 @@ class EncoderConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
-    max_num_register_tokens: int = 64
+    max_num_register_tokens: int = 8
     norm_out_mode: Literal[
         "disabled", "adanorm", "layernorm", "batchnorm", "dyntanh"
     ] = "layernorm"
@@ -383,7 +383,7 @@ class PredictorConfig:
     use_rope2d: bool = True
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
-    max_num_register_tokens: int = 64
+    max_num_register_tokens: int = 8
 
     should_zero_ctx_register_tokens: bool = True
 

@@ -60,7 +60,7 @@ def validate(
     validation_depthsmart_mode: Literal[
         "learned", "extract-layers", "lastlayer"
     ] = "extract-layers",
-    num_tokens_per_register_token: int = 32,
+    num_register_tokens: int = 8,
 ):
     encoder = model.ema_encoder
     num_features = encoder.hidden_size
@@ -82,7 +82,7 @@ def validate(
         label_column_name=label_column_name,
         batch_size=batch_size,
         image_size=validation_image_size,
-        num_tokens_per_register_token=num_tokens_per_register_token,
+        num_register_tokens=num_register_tokens,
         patch_size=patch_size,
     )
     val_test_dataset = get_test_dataset(
@@ -92,7 +92,7 @@ def validate(
         label_column_name=label_column_name,
         batch_size=batch_size,
         image_size=validation_image_size,
-        num_tokens_per_register_token=num_tokens_per_register_token,
+        num_register_tokens=num_register_tokens,
         patch_size=patch_size,
     )
 
