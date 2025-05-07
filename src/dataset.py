@@ -268,10 +268,10 @@ class RandomImageResizer:
         image_crop_size = tuple(max(size, multiple_of) for size in image_crop_size)
 
         # Hack to prevent too few windows
-        factor = sum(size // multiple_of for size in image_crop_size)
+        factor = min(size // multiple_of for size in image_crop_size)
         while factor < min_mult_of_factor:
             image_crop_size = tuple(size + multiple_of for size in image_crop_size)
-            factor = sum(size // multiple_of for size in image_crop_size)
+            factor = min(size // multiple_of for size in image_crop_size)
 
         x = x.convert("RGB").resize(
             image_crop_size, resample=PIL.Image.Resampling.BICUBIC
@@ -288,9 +288,11 @@ class ContextTargetSplitter:
         self,
         max_context_sequence_length=128,
         window_size: int = 2,
+        min_proportion_context: float = 0.2,
     ):
         self.max_context_sequence_length = max_context_sequence_length
         self.window_size = window_size
+        self.min_proportion_context = min_proportion_context
 
     def __call__(self, row):
         window_size = self.window_size
@@ -310,11 +312,12 @@ class ContextTargetSplitter:
         max_num_context_windows = self.max_context_sequence_length // tokens_per_window
         max_num_context_windows = min(num_total_windows - 1, max_num_context_windows)
 
-        min_num_context_windows = 1
-
         if num_total_windows == 2:
             num_context_windows = 1
         else:
+            min_num_context_windows = int(
+                round(num_total_windows * self.min_proportion_context)
+            )
             num_context_windows = random.randint(
                 min_num_context_windows, max_num_context_windows
             )
@@ -330,9 +333,11 @@ class ContextTargetSplitter:
         # n (wh ww) -> (n wh ww)
         idx = idx.reshape(-1)
 
+        num_context_tokens = num_context_windows * tokens_per_window
+
         context_idx, target_idx = (
-            idx[: num_context_windows * tokens_per_window],
-            idx[num_context_windows * tokens_per_window :],
+            idx[:num_context_tokens],
+            idx[num_context_tokens:],
         )
 
         # nph npw d -> (nph npw) d
