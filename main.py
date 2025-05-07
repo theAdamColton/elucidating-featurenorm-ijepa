@@ -66,7 +66,7 @@ class MainConfig:
     label_column_name: str = "cls"
     num_classes: int = 1000
 
-    num_register_tokens: int = 0
+    num_register_tokens: int = 2
 
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()

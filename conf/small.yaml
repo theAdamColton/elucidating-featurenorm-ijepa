@@ -21,7 +21,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: layernorm
+      norm_out_mode: adanorm
     predictor:
       input_size: 384
       num_transformer_blocks: 4
@@ -37,4 +37,4 @@ conf:
     depthsmart_mode: disabled
     target_norm_mode: layernorm
   mode: train
-  validate_every_num_epochs: 4
+  validate_every_num_epochs: 10
