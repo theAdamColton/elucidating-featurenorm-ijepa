@@ -257,7 +257,7 @@ def main(conf: MainConfig = MainConfig()):
         )
 
         def save():
-            checkpoint_folder_path.mkdir(exist_ok=True)
+            checkpoint_folder_path.mkdir(exist_ok=True, parents=True)
 
             existing_checkpoints = list(checkpoint_folder_path.iterdir())
             existing_checkpoints.sort()
