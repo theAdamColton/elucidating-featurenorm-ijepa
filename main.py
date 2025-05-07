@@ -66,7 +66,9 @@ class MainConfig:
     label_column_name: str = "cls"
     num_classes: int = 1000
 
-    num_register_tokens: int = 2
+    num_register_tokens: int = 0
+    min_context_capacity: float = 0.25
+    max_context_capacity: float = 0.5
 
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()
@@ -103,6 +105,8 @@ def main(conf: MainConfig = MainConfig()):
         packer_batch_size=conf.packer_batch_size,
         num_register_tokens=conf.num_register_tokens,
         patch_size=patch_size,
+        min_context_capacity=conf.min_context_capacity,
+        max_context_capacity=conf.max_context_capacity,
     )
 
     training_state = dict(global_step=0, epoch=0)

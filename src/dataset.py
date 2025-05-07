@@ -1,3 +1,4 @@
+import math
 import random
 import numpy as np
 import torch
@@ -231,7 +232,7 @@ class ImageSizeFilter:
         w, h = row["pixel_values"].size
 
         side_length = int((h + w) / 2)
-        return side_length > self.min_side_length
+        return side_length >= self.min_side_length
 
 
 class RandomImageResizer:
@@ -241,11 +242,13 @@ class RandomImageResizer:
         min_side_length=64,
         multiple_of=32,
         min_mult_of_factor=2,
+        max_num_pixels=256**2,
     ):
         self.max_side_length = max_side_length
         self.min_side_length = min_side_length
         self.multiple_of = multiple_of
         self.min_mult_of_factor = min_mult_of_factor
+        self.max_num_pixels = max_num_pixels
 
     def __call__(self, row):
         min_side_length = self.min_side_length
@@ -258,23 +261,44 @@ class RandomImageResizer:
         input_w, input_h = x.size
         input_side_length = (input_h + input_w) / 2
 
-        sampled_side_length = random.randint(min_side_length, max_side_length)
+        if input_side_length < min_side_length:
+            raise ValueError(
+                f"Will not resize image with side length {input_side_length}, which is less than minimum \
+                side length, {min_side_length}!"
+            )
+
+        max_side_length = min(int(round(input_side_length)), max_side_length)
+
+        # Sample a random side length to obtain a scaling factor
+        if min_side_length == max_side_length:
+            sampled_side_length = min_side_length
+        else:
+            sampled_side_length = random.randint(min_side_length, max_side_length)
+
         scale_factor = sampled_side_length / input_side_length
-        image_crop_size = (input_w * scale_factor, input_h * scale_factor)
+        new_image_size = (input_w * scale_factor, input_h * scale_factor)
 
-        image_crop_size = tuple(
-            int(size // multiple_of) * multiple_of for size in image_crop_size
+        # Ensure that the new size doesnt exceed max_num_pixels
+        if math.prod(new_image_size) > self.max_num_pixels:
+            # max_num_pixels = (h * scale * w * scale)
+            # scale = (max_num_pixels / (h * w)) ** 0.5
+            scale = (self.max_num_pixels / math.prod(new_image_size)) ** 0.5
+            new_image_size = tuple(int(size * scale) for size in new_image_size)
+
+        # Ensure that the new size is a divisible by multiple of
+        new_image_size = tuple(
+            int(size // multiple_of) * multiple_of for size in new_image_size
         )
-        image_crop_size = tuple(max(size, multiple_of) for size in image_crop_size)
+        new_image_size = tuple(max(size, multiple_of) for size in new_image_size)
 
-        # Hack to prevent too few windows
-        factor = min(size // multiple_of for size in image_crop_size)
+        # Ensure that there are enough multiple_ofs in the new size
+        factor = min(size // multiple_of for size in new_image_size)
         while factor < min_mult_of_factor:
-            image_crop_size = tuple(size + multiple_of for size in image_crop_size)
-            factor = min(size // multiple_of for size in image_crop_size)
+            new_image_size = tuple(size + multiple_of for size in new_image_size)
+            factor = min(size // multiple_of for size in new_image_size)
 
         x = x.convert("RGB").resize(
-            image_crop_size, resample=PIL.Image.Resampling.BICUBIC
+            new_image_size, resample=PIL.Image.Resampling.BICUBIC
         )
         x = torch.from_numpy(np.array(x))
 
@@ -286,16 +310,18 @@ class RandomImageResizer:
 class ContextTargetSplitter:
     def __init__(
         self,
-        max_context_sequence_length=128,
         window_size: int = 2,
-        min_proportion_context: float = 0.2,
+        min_context_capacity: float = 0.25,
+        max_context_capacity: float = 0.5,
     ):
-        self.max_context_sequence_length = max_context_sequence_length
         self.window_size = window_size
-        self.min_proportion_context = min_proportion_context
+        self.min_proportion_context = min_context_capacity
+        self.max_proportion_context = max_context_capacity
 
     def __call__(self, row):
         window_size = self.window_size
+        min_context_capacity = self.min_proportion_context
+        max_context_capacity = self.max_proportion_context
 
         x = row.pop("pixel_values")
         position_ids = row.pop("position_ids")
@@ -309,20 +335,20 @@ class ContextTargetSplitter:
 
         tokens_per_window = window_size**2
 
-        max_num_context_windows = self.max_context_sequence_length // tokens_per_window
-        max_num_context_windows = min(num_total_windows - 1, max_num_context_windows)
+        min_num_context_windows = int(round(num_total_windows * min_context_capacity))
+        min_num_context_windows = max(min_num_context_windows, 1)
+        max_num_context_windows = int(round(num_total_windows * max_context_capacity))
 
+        # Sample a number of context windows
         if num_total_windows == 2:
             num_context_windows = 1
         else:
-            min_num_context_windows = int(
-                round(num_total_windows * self.min_proportion_context)
-            )
-            min_num_context_windows = max(min_num_context_windows, 1)
             num_context_windows = random.randint(
                 min_num_context_windows, max_num_context_windows
             )
 
+        # Create a flat idx into x, arrange it into square windows,
+        # and randomly permute it
         idx = torch.arange(nph * npw)
         idx = idx.reshape(nph, npw)
         # (nwh wh) (nww ww) -> nwh nww wh ww
@@ -336,20 +362,19 @@ class ContextTargetSplitter:
 
         num_context_tokens = num_context_windows * tokens_per_window
 
-        context_idx, target_idx = (
-            idx[:num_context_tokens],
-            idx[num_context_tokens:],
-        )
+        # Permute windows of x, and assign them to context or target
 
         # nph npw d -> (nph npw) d
         x = x.reshape(-1, d)
-        x, y = x[context_idx], x[target_idx]
+        x = x[idx]
+        x, y = x[:num_context_tokens], x[num_context_tokens:]
 
         # nph npw nd -> (nph npw) nd
         position_ids = position_ids.reshape(-1, nd)
+        position_ids = position_ids[idx]
         x_position_ids, y_position_ids = (
-            position_ids[context_idx],
-            position_ids[target_idx],
+            position_ids[:num_context_tokens],
+            position_ids[num_context_tokens:],
         )
 
         row["x_patches"] = x
@@ -434,16 +459,27 @@ def get_context_target_dataset(
     patch_size: int = 16,
     mask_window_size: int = 2,
     num_register_tokens: int = 8,
+    min_context_capacity: float = 0.25,
+    max_context_capacity: float = 0.5,
 ):
 
     resize_multiple_of = patch_size * mask_window_size
 
     max_sequence_length = (max_side_length // patch_size) ** 2
-    # Between 1 and half are context tokens
-    max_target_sequence_length = max_sequence_length
+    max_num_pixels = max_sequence_length * patch_size**2
 
-    max_context_sequence_length = int(round(max_target_sequence_length / 2))
-    # Register tokens are added to the context after being patched
+    # For an input of max_sequence_length,
+    # the context recieves a random sequence length between
+    # min_context_sequence_length and max_context_sequence_length.
+    # This means that there are a maximum of (max_sequence_length - min_context_sequence_length) tokens
+    # that are exclusive to the target.
+    max_context_sequence_length = int(round(max_sequence_length * max_context_capacity))
+    min_context_sequence_length = int(round(max_sequence_length * min_context_capacity))
+
+    max_y_sequence_length = max_sequence_length - min_context_sequence_length
+
+    # Register tokens are added to the context after being patched;
+    # the context sequence length grows by num_register_tokens just before being packed
     packer_context_sequence_length = max_context_sequence_length + num_register_tokens
 
     tensorset_pad_value_dict = {
@@ -467,13 +503,15 @@ def get_context_target_dataset(
                 max_side_length=max_side_length,
                 min_side_length=min_side_length,
                 multiple_of=resize_multiple_of,
+                max_num_pixels=max_num_pixels,
             )
         )
         .map(ImagePatcher(patch_size))
         .map(
             ContextTargetSplitter(
-                max_context_sequence_length=max_context_sequence_length,
                 window_size=mask_window_size,
+                min_context_capacity=min_context_capacity,
+                max_context_capacity=max_context_capacity,
             )
         )
         # Add register tokens only to the context
@@ -495,7 +533,7 @@ def get_context_target_dataset(
         .compose(
             packed_x_y(
                 packer_context_sequence_length,
-                max_target_sequence_length,
+                max_y_sequence_length,
                 packer_batch_size,
                 pad_value_dict=tensorset_pad_value_dict,
             )
