@@ -482,6 +482,11 @@ def get_context_target_dataset(
     # the context sequence length grows by num_register_tokens just before being packed
     packer_context_sequence_length = max_context_sequence_length + num_register_tokens
 
+    print(
+        f"Creating context target dataset: packer_context_sequence_length: {packer_context_sequence_length} \
+          teacher sequence length {packer_context_sequence_length + max_y_sequence_length}"
+    )
+
     tensorset_pad_value_dict = {
         "position_ids": 0,
         "patches": 0,
