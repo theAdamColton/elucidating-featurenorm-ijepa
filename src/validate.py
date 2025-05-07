@@ -1,3 +1,4 @@
+import random
 from typing import Literal
 from glob import glob
 import uuid
@@ -18,6 +19,7 @@ from src.model import IJEPADepthSmart
 class MultiDepthClassifier(nn.Module):
     def __init__(self, num_depth, num_classes, num_features):
         super().__init__()
+        self.mod = nn.Linear(num_features, num_classes)
         self.weights = nn.Parameter(torch.empty(num_depth, num_classes, num_features))
         nn.init.uniform_(
             self.weights, -1 / (num_features) ** 0.5, 1 / (num_features) ** 0.5
@@ -26,8 +28,9 @@ class MultiDepthClassifier(nn.Module):
         self.num_depth = num_depth
 
     def forward(self, emb, lab):
-        logits = einx.dot("b n d, n c d -> b n c", emb, self.weights)
-        logits = einx.add("b n c, n c", logits, self.biases)
+        # logits = einx.dot("b n d, n c d -> b n c", emb, self.weights)
+        # logits = einx.add("b n c, n c", logits, self.biases)
+        logits = self.mod(emb)
         preds = logits.argmax(-1)
 
         logits = einx.rearrange("b n c -> (b n) c", logits)
@@ -203,12 +206,26 @@ def validate(
             classifier = torch.compile(classifier)
 
         train_dataset = (
-            wds.WebDataset(train_tar_urls, empty_check=False).shuffle(1000).decode()
+            wds.WebDataset(
+                train_tar_urls,
+                empty_check=False,
+                shardshuffle=100,
+                detshuffle=True,
+                seed=random.randint(0, 2**30),
+            )
+            .shuffle(1000)
+            .decode()
+            .batched(validation_probe_batch_size)
         )
-        train_dataloader = DataLoader(
-            train_dataset,
-            num_workers=num_workers,
-            batch_size=validation_probe_batch_size,
+        train_dataloader = (
+            wds.WebLoader(
+                train_dataset,
+                num_workers=num_workers,
+                batch_size=None,
+            )
+            .unbatched()
+            .shuffle(1000)
+            .batched(validation_probe_batch_size)
         )
 
         for val_epoch in tqdm(

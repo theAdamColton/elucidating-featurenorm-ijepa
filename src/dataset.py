@@ -35,7 +35,7 @@ def _get_image_dataset(
 ):
     dataset = wds.WebDataset(
         urls=dataset_pattern,
-        shardshuffle=shuffle,
+        shardshuffle=100 if shuffle else None,
         detshuffle=shuffle,
         seed=seed,
         nodesplitter=wds.split_by_node,
