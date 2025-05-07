@@ -509,6 +509,7 @@ class IJEPADepthSmartConfig:
     num_denoiser_timesteps: int = 1000
 
     should_predict_register_tokens: bool = False
+    should_predict_from_all_target: bool = False
 
     target_norm_mode: Literal[
         "layernorm", "disabled", "batchnorm", "running-batchnorm"
@@ -548,7 +549,6 @@ class IJEPADepthSmart(nn.Module):
         device, dtype = x.device, x.dtype
 
         b, xs, d = x.shape
-        b, ts, d = y.shape
 
         y = torch.cat((x, y), 1)
         y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
@@ -585,10 +585,13 @@ class IJEPADepthSmart(nn.Module):
             else:
                 target_hidden_states, *_ = ema_encoder_outputs
 
-        # Keep only the target hidden states from
-        # tokens absent from context
-        target_hidden_states = target_hidden_states[:, xs:, :]
-        y_token_ids = y_token_ids[:, xs:, :]
+        if not config.should_predict_from_all_target:
+            # Keep only the target hidden states from
+            # tokens absent from context
+            target_hidden_states = target_hidden_states[:, xs:, :]
+            y_token_ids = y_token_ids[:, xs:, :]
+
+        b, ts, d = target_hidden_states.shape
 
         if config.target_norm_mode == "layernorm":
             target_hidden_states = F.layer_norm(

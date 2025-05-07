@@ -310,8 +310,7 @@ class ContextTargetSplitter:
         max_num_context_windows = self.max_context_sequence_length // tokens_per_window
         max_num_context_windows = min(num_total_windows - 1, max_num_context_windows)
 
-        min_num_context_windows = int(round(max_num_context_windows * 0.25))
-        min_num_context_windows = max(min_num_context_windows, 1)
+        min_num_context_windows = 1
 
         if num_total_windows == 2:
             num_context_windows = 1
@@ -435,7 +434,7 @@ def get_context_target_dataset(
 
     max_sequence_length = (max_side_length // patch_size) ** 2
     # Between 1 and half are context tokens
-    max_target_sequence_length = max_sequence_length - 1
+    max_target_sequence_length = max_sequence_length
 
     max_context_sequence_length = int(round(max_target_sequence_length / 2))
     # Register tokens are added to the context after being patched

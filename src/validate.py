@@ -60,7 +60,7 @@ def validate(
     validation_depthsmart_mode: Literal[
         "learned", "extract-layers", "lastlayer"
     ] = "extract-layers",
-    num_register_tokens: int = 8,
+    num_register_tokens: int = 0,
 ):
     encoder = model.ema_encoder
     num_features = encoder.hidden_size
