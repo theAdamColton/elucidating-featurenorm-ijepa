@@ -118,11 +118,9 @@ def main(conf: MainConfig = MainConfig()):
 
         def _load():
             d = torch.load(conf.resume_path, map_location=device, weights_only=False)
-            model.load_state_dict(d["model"]._orig_mod.state_dict())
-            # model.load_state_dict(d["model"])
+            model.load_state_dict(d["model"])
             training_state.update(d["training_state"])
-            optimizer.load_state_dict(d["optimizer"].state_dict())
-            # optimizer.load_state_dict(d["optimizer"])
+            optimizer.load_state_dict(d["optimizer"])
 
         _load()
 

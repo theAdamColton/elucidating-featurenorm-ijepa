@@ -639,6 +639,10 @@ class IJEPADepthSmart(nn.Module):
             "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
         )
 
+        # TODO
+        # Try to give the predictor at least
+        # one token for context and one token for prediction from each sample
+
         # The predictor uses a random subset of the context
         # to predict a random subset of the target
         num_ctx_tokens = int(round(xs * config.predictor_context_capacity))

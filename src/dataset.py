@@ -318,6 +318,7 @@ class ContextTargetSplitter:
             min_num_context_windows = int(
                 round(num_total_windows * self.min_proportion_context)
             )
+            min_num_context_windows = max(min_num_context_windows, 1)
             num_context_windows = random.randint(
                 min_num_context_windows, max_num_context_windows
             )
