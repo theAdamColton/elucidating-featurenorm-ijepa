@@ -263,7 +263,7 @@ def main(conf: MainConfig = MainConfig()):
             existing_checkpoints.sort()
             max_num_checkpoints = 5
 
-            checkpoints_to_delete = existing_checkpoints[:max_num_checkpoints]
+            checkpoints_to_delete = existing_checkpoints[:-max_num_checkpoints]
 
             for existing_checkpoint in checkpoints_to_delete:
                 print("Deleting checkpoint", existing_checkpoint)
