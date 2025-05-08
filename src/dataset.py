@@ -462,7 +462,6 @@ def get_context_target_dataset(
     min_context_capacity: float = 0.25,
     max_context_capacity: float = 0.5,
 ):
-
     resize_multiple_of = patch_size * mask_window_size
 
     max_sequence_length = (max_side_length // patch_size) ** 2

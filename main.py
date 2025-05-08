@@ -13,7 +13,6 @@ import random
 import torch
 from dataclasses import dataclass, field, asdict
 import wandb
-from accelerate import Accelerator
 
 from src.dataset import get_context_target_dataset
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart, MASK_SEQUENCE_ID
