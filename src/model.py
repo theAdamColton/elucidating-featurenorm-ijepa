@@ -520,6 +520,7 @@ class IJEPADepthSmartConfig:
     num_denoiser_timesteps: int = 1000
 
     should_predict_register_tokens: bool = False
+    should_attempt_mask_dropping: bool = True
     should_predict_from_all_target: bool = False
 
     target_norm_mode: Literal[
@@ -663,29 +664,37 @@ class IJEPADepthSmart(nn.Module):
         ctx_scores = torch.rand(
             config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
         )
-        # Try to prevent the predictor from being given padding tokens
-        # as part of context
-        is_ctx_padding = x_token_ids[..., 0] == MASK_SEQUENCE_ID
-        ctx_scores.masked_fill_(is_ctx_padding, -1)
-        ctx_ids = ctx_scores.topk(num_ctx_tokens, dim=-1, sorted=False).indices
+
+        if config.should_attempt_mask_dropping:
+            # Try to prevent the predictor from being given padding tokens
+            # as part of context
+            is_ctx_padding = x_token_ids[..., 0] == MASK_SEQUENCE_ID
+            ctx_scores.masked_fill_(is_ctx_padding, -1)
+
+        context_idx = ctx_scores.topk(num_ctx_tokens, dim=-1, sorted=False).indices
 
         target_scores = torch.rand(
             config.predictor_batch_repeat * b, ts, device=device, dtype=dtype
         )
-        # Try to prevent the predictor from being given padding tokens
-        # as prediction targets
-        is_target_padding = y_token_ids[..., 0] == MASK_SEQUENCE_ID
-        target_scores.masked_fill_(is_target_padding, -1)
-        target_ids = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
 
-        ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, ctx_ids)
+        if config.should_attempt_mask_dropping:
+            # Try to prevent the predictor from being given padding tokens
+            # as prediction targets
+            is_target_padding = y_token_ids[..., 0] == MASK_SEQUENCE_ID
+            target_scores.masked_fill_(is_target_padding, -1)
+
+        target_idx = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
+
+        ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, context_idx)
         targets = einx.get_at(
-            "rb [ts] d, rb m -> rb m d", target_hidden_states, target_ids
+            "rb [ts] d, rb m -> rb m d", target_hidden_states, target_idx
         )
 
-        ctx_token_ids = einx.get_at("rb [xs] nd, rb k -> rb k nd", x_token_ids, ctx_ids)
+        ctx_token_ids = einx.get_at(
+            "rb [xs] nd, rb k -> rb k nd", x_token_ids, context_idx
+        )
         target_token_ids = einx.get_at(
-            "rb [ts] nd, rb m -> rb m nd", y_token_ids, target_ids
+            "rb [ts] nd, rb m -> rb m nd", y_token_ids, target_idx
         )
 
         if config.depthsmart_mode == "noise":
@@ -702,7 +711,7 @@ class IJEPADepthSmart(nn.Module):
 
         prediction_mask = torch.zeros(
             config.predictor_batch_repeat * b,
-            x.shape[1],
+            ps,
             dtype=torch.bool,
             device=device,
         )
@@ -720,10 +729,10 @@ class IJEPADepthSmart(nn.Module):
         # Should these registers be upweighted? Or excluded from loss
 
         target_sequence_ids = token_ids[:, num_ctx_tokens:, 0]
-        target_register_ids = token_ids[:, num_ctx_tokens:, 1]
         is_target_mask = target_sequence_ids != MASK_SEQUENCE_ID
 
         if not config.should_predict_register_tokens:
+            target_register_ids = token_ids[:, num_ctx_tokens:, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SEQUENCE_ID)
 
         loss = loss[is_target_mask].mean()

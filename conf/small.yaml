@@ -36,5 +36,7 @@ conf:
     predictor_batch_repeat: 4
     depthsmart_mode: disabled
     target_norm_mode: layernorm
+    should_predict_from_all_target: true
+    should_predict_mask_dropping: false
   mode: train
   validate_every_num_epochs: 10

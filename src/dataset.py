@@ -73,7 +73,7 @@ class ImageResizer:
         x = x.convert("RGB").resize(
             size=(self.size, self.size),
             box=box,
-            resample=PIL.Image.Resampling.BICUBIC,
+            resample=PIL.Image.Resampling.BILINEAR,
         )
         x = np.array(x)
         x = torch.from_numpy(x)
@@ -298,7 +298,7 @@ class RandomImageResizer:
             factor = min(size // multiple_of for size in new_image_size)
 
         x = x.convert("RGB").resize(
-            new_image_size, resample=PIL.Image.Resampling.BICUBIC
+            new_image_size, resample=PIL.Image.Resampling.BILINEAR
         )
         x = torch.from_numpy(np.array(x))
 
@@ -311,17 +311,20 @@ class ContextTargetSplitter:
     def __init__(
         self,
         window_size: int = 2,
-        min_context_capacity: float = 0.25,
-        max_context_capacity: float = 0.5,
+        min_context_capacity: float = 0.05,
+        max_context_capacity: float = 0.95,
+        max_context_sequence_length: int = 128,
     ):
         self.window_size = window_size
-        self.min_proportion_context = min_context_capacity
-        self.max_proportion_context = max_context_capacity
+        self.min_context_capacity = min_context_capacity
+        self.max_context_capacity = max_context_capacity
+        self.max_context_sequence_length = max_context_sequence_length
 
     def __call__(self, row):
         window_size = self.window_size
-        min_context_capacity = self.min_proportion_context
-        max_context_capacity = self.max_proportion_context
+        min_context_capacity = self.min_context_capacity
+        max_context_capacity = self.max_context_capacity
+        max_context_sequence_length = self.max_context_sequence_length
 
         x = row.pop("pixel_values")
         position_ids = row.pop("position_ids")
@@ -338,6 +341,17 @@ class ContextTargetSplitter:
         min_num_context_windows = int(round(num_total_windows * min_context_capacity))
         min_num_context_windows = max(min_num_context_windows, 1)
         max_num_context_windows = int(round(num_total_windows * max_context_capacity))
+
+        # TODO this is an attempt to repro good run, where the num of context tokens
+        # is capped and thus reduced on large sequence lengths. So for smaller length
+        # inputs, the capacity is from 0.05 to 0.95. But for inputs exceeding 128,
+        # assuming the maximum total sequence length is 256, the maximum capacity becomes 0.5.
+        absolute_max_num_context_windows = (
+            max_context_sequence_length // tokens_per_window
+        )
+        max_num_context_windows = min(
+            max_num_context_windows, absolute_max_num_context_windows
+        )
 
         # Sample a number of context windows
         if num_total_windows == 2:
@@ -459,8 +473,8 @@ def get_context_target_dataset(
     patch_size: int = 16,
     mask_window_size: int = 2,
     num_register_tokens: int = 8,
-    min_context_capacity: float = 0.25,
-    max_context_capacity: float = 0.5,
+    min_context_capacity: float = 0.05,
+    max_context_capacity: float = 0.95,
 ):
     resize_multiple_of = patch_size * mask_window_size
 
@@ -472,8 +486,19 @@ def get_context_target_dataset(
     # min_context_sequence_length and max_context_sequence_length.
     # This means that there are a maximum of (max_sequence_length - min_context_sequence_length) tokens
     # that are exclusive to the target.
-    max_context_sequence_length = int(round(max_sequence_length * max_context_capacity))
-    min_context_sequence_length = int(round(max_sequence_length * min_context_capacity))
+
+    # max_context_sequence_length = int(round(max_sequence_length * max_context_capacity))
+    # min_context_sequence_length = int(round(max_sequence_length * min_context_capacity))
+
+    # TODO try to reproduce good run by masking high resolution inputs more than
+    # low resolution inputs
+    max_context_sequence_length = max_sequence_length // 2
+    min_context_windows = int(
+        (max_sequence_length // mask_window_size**2) * min_context_capacity
+    )
+    min_context_sequence_length = max_sequence_length - (
+        min_context_windows * mask_window_size**2
+    )
 
     max_y_sequence_length = max_sequence_length - min_context_sequence_length
 
@@ -516,6 +541,7 @@ def get_context_target_dataset(
                 window_size=mask_window_size,
                 min_context_capacity=min_context_capacity,
                 max_context_capacity=max_context_capacity,
+                max_context_sequence_length=max_context_sequence_length,
             )
         )
         # Add register tokens only to the context

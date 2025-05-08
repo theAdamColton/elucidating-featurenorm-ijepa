@@ -66,8 +66,8 @@ class MainConfig:
     num_classes: int = 1000
 
     num_register_tokens: int = 0
-    min_context_capacity: float = 0.25
-    max_context_capacity: float = 0.5
+    min_context_capacity: float = 0.05
+    max_context_capacity: float = 0.95
 
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()
