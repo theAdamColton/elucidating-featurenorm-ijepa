@@ -30,7 +30,7 @@ class PairPacker:
         sequence_length_x,
         sequence_length_y,
         batch_size,
-        pad_value_dict=dict,
+        pad_value_dict=dict(),
     ):
         self.sequence_length_x = sequence_length_x
         self.sequence_length_y = sequence_length_y
