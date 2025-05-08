@@ -19,7 +19,6 @@ from src.model import IJEPADepthSmart
 class MultiDepthClassifier(nn.Module):
     def __init__(self, num_depth, num_classes, num_features):
         super().__init__()
-        self.mod = nn.Linear(num_features, num_classes)
         self.weights = nn.Parameter(torch.empty(num_depth, num_classes, num_features))
         nn.init.uniform_(
             self.weights, -1 / (num_features) ** 0.5, 1 / (num_features) ** 0.5
@@ -28,9 +27,8 @@ class MultiDepthClassifier(nn.Module):
         self.num_depth = num_depth
 
     def forward(self, emb, lab):
-        # logits = einx.dot("b n d, n c d -> b n c", emb, self.weights)
-        # logits = einx.add("b n c, n c", logits, self.biases)
-        logits = self.mod(emb)
+        logits = einx.dot("b n d, n c d -> b n c", emb, self.weights)
+        logits = einx.add("b n c, n c", logits, self.biases)
         preds = logits.argmax(-1)
 
         logits = einx.rearrange("b n c -> (b n) c", logits)
