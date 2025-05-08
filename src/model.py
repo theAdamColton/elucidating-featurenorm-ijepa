@@ -210,6 +210,8 @@ class EncoderConfig:
 
     use_rope2d: bool = True
 
+    use_abs_pos_emb: bool = False
+
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 8
@@ -234,14 +236,15 @@ class Encoder(nn.Module):
         )
         init.trunc_normal_(self.reg_emb, std=0.02)
 
-        self.h_emb = nn.Parameter(
-            torch.empty(config.max_num_height_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.h_emb, std=0.02)
-        self.w_emb = nn.Parameter(
-            torch.empty(config.max_num_width_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.w_emb, std=0.02)
+        if config.use_abs_pos_emb:
+            self.h_emb = nn.Parameter(
+                torch.empty(config.max_num_height_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.h_emb, std=0.02)
+            self.w_emb = nn.Parameter(
+                torch.empty(config.max_num_width_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.w_emb, std=0.02)
 
         if config.use_rope2d:
             self.rope_pos_emb = RopePosEmbedND(
@@ -305,8 +308,11 @@ class Encoder(nn.Module):
         else:
             rotary_embeds = None
 
-        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
-        x = x + pos_emb
+        if config.use_abs_pos_emb:
+            pos_emb = (
+                self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
+            )
+            x = x + pos_emb
 
         attn_mask = einx.equal(
             "b s1, b s2 -> b h s1 s2",
@@ -381,6 +387,8 @@ class PredictorConfig:
     )
 
     use_rope2d: bool = True
+    use_abs_pos_emb: bool = False
+
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 8
@@ -470,8 +478,11 @@ class Predictor(nn.Module):
 
         x = x + reg_emb
 
-        pos_emb = self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
-        x = x + pos_emb
+        if config.use_abs_pos_emb:
+            pos_emb = (
+                self.h_emb[position_ids[..., 0]] + self.w_emb[position_ids[..., 1]]
+            )
+            x = x + pos_emb
 
         p_emb = einx.multiply("d, b s -> b s d", self.pred_emb, prediction_mask)
 
