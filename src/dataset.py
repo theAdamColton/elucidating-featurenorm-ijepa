@@ -243,12 +243,14 @@ class RandomImageResizer:
         multiple_of=32,
         min_mult_of_factor=2,
         max_num_pixels=256**2,
+        resample_mode=PIL.Image.Resampling.NEAREST,
     ):
         self.max_side_length = max_side_length
         self.min_side_length = min_side_length
         self.multiple_of = multiple_of
         self.min_mult_of_factor = min_mult_of_factor
         self.max_num_pixels = max_num_pixels
+        self.resample_mode = resample_mode
 
     def __call__(self, row):
         min_side_length = self.min_side_length
@@ -297,9 +299,7 @@ class RandomImageResizer:
             new_image_size = tuple(size + multiple_of for size in new_image_size)
             factor = min(size // multiple_of for size in new_image_size)
 
-        x = x.convert("RGB").resize(
-            new_image_size, resample=PIL.Image.Resampling.BILINEAR
-        )
+        x = x.convert("RGB").resize(new_image_size, resample=self.resample_mode)
         x = torch.from_numpy(np.array(x))
 
         row["pixel_values"] = x
@@ -341,6 +341,7 @@ class ContextTargetSplitter:
         min_num_context_windows = int(round(num_total_windows * min_context_capacity))
         min_num_context_windows = max(min_num_context_windows, 1)
         max_num_context_windows = int(round(num_total_windows * max_context_capacity))
+        max_num_context_windows = min(max_num_context_windows, num_total_windows - 1)
 
         # TODO this is an attempt to repro good run, where the num of context tokens
         # is capped and thus reduced on large sequence lengths. So for smaller length
@@ -492,13 +493,12 @@ def get_context_target_dataset(
 
     # TODO try to reproduce good run by masking high resolution inputs more than
     # low resolution inputs
+    # TODO add this as configurable option
     max_context_sequence_length = max_sequence_length // 2
     min_context_windows = int(
         (max_sequence_length // mask_window_size**2) * min_context_capacity
     )
-    min_context_sequence_length = max_sequence_length - (
-        min_context_windows * mask_window_size**2
-    )
+    min_context_sequence_length = min_context_windows * mask_window_size**2
 
     max_y_sequence_length = max_sequence_length - min_context_sequence_length
 
