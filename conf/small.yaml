@@ -4,6 +4,7 @@ conf:
   device: cuda
   batch_size: 256
   num_workers: 8
+  ema_beta_start: 0
   start_lr: 1e-7
   lr: 5e-4
   interp_warmup_steps: 30000
@@ -21,7 +22,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: adanorm
+      norm_out_mode: disabled
     predictor:
       input_size: 384
       num_transformer_blocks: 4
@@ -35,8 +36,10 @@ conf:
           num_attention_heads: 6
     predictor_batch_repeat: 4
     depthsmart_mode: disabled
-    target_norm_mode: layernorm
-    should_predict_from_all_target: true
-    should_attempt_mask_dropping: false
+    target_norm_mode: running-batchnorm
+    should_predict_from_all_target: false
+    should_attempt_mask_dropping: true
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
   mode: train
   validate_every_num_epochs: 10

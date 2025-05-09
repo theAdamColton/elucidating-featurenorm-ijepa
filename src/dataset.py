@@ -243,7 +243,7 @@ class RandomImageResizer:
         multiple_of=32,
         min_mult_of_factor=2,
         max_num_pixels=256**2,
-        resample_mode=PIL.Image.Resampling.NEAREST,
+        resample_mode=PIL.Image.Resampling.BILINEAR,
     ):
         self.max_side_length = max_side_length
         self.min_side_length = min_side_length
