@@ -218,6 +218,7 @@ class EncoderConfig:
     norm_out_mode: Literal[
         "disabled", "adanorm", "layernorm", "batchnorm", "dyntanh"
     ] = "layernorm"
+    norm_elementwise_affine: bool = True
 
 
 class Encoder(nn.Module):
@@ -257,13 +258,17 @@ class Encoder(nn.Module):
         )
 
         if config.norm_out_mode == "layernorm":
-            self.norm_out = nn.LayerNorm(self.hidden_size)
+            self.norm_out = nn.LayerNorm(
+                self.hidden_size, elementwise_affine=config.norm_elementwise_affine
+            )
         elif config.norm_out_mode == "disabled":
             self.norm_out = nn.Identity()
         elif config.norm_out_mode == "batchnorm":
             self.norm_out = RunningBatchNorm(self.hidden_size)
         elif config.norm_out_mode == "dyntanh":
-            self.norm_out = DynTanh(self.hidden_size)
+            self.norm_out = DynTanh(
+                self.hidden_size, self.config.norm_elementwise_affine
+            )
         elif config.norm_out_mode == "adanorm":
             self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
         else:
@@ -367,10 +372,20 @@ class Encoder(nn.Module):
         elif return_all_layer_features:
             if config.norm_out_mode == "adanorm":
                 all_layer_features = self.norm_out(all_layer_features, temb)
-            else:
+            elif config.norm_out_mode == "batchnorm":
                 # TODO
                 # Don't want this to contribute to RunningBatchNorm estimations
+                self.norm_out.eval()
                 all_layer_features = self.norm_out(all_layer_features)
+                self.norm_out.train()
+            elif config.norm_out_mode == "layernorm":
+                # Don't use affine
+                all_layer_features = F.layer_norm(
+                    all_layer_features, (all_layer_features.shape[-1],)
+                )
+            elif config.norm_out_mode == "dyntanh":
+                # Only use tanh on the final layer features
+                all_layer_features[-1] = self.norm_out(all_layer_features[-1])
 
             return x, all_layer_features
 
@@ -632,7 +647,7 @@ class IJEPADepthSmart(nn.Module):
         smooth_rank = None
         if return_smooth_rank:
             smooth_rank = compute_smooth_rank(
-                target_hidden_states.view(-1, target_hidden_states.shape[-1])
+                target_hidden_states.reshape(-1, target_hidden_states.shape[-1])
             )
 
         x, *_ = self.encoder(x, x_t, x_token_ids)

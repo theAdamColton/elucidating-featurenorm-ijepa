@@ -4,8 +4,10 @@ conf:
   device: cuda
   batch_size: 256
   num_workers: 8
-  ema_beta_start: 0
-  start_lr: 1e-7
+  ema_beta_start: 0.85
+  ema_beta: 0.996
+  ema_beta_warmup_steps: 5000
+  start_lr: 1e-4
   lr: 5e-4
   interp_warmup_steps: 30000
   train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
@@ -22,7 +24,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: disabled
+      norm_out_mode: dyntanh
     predictor:
       input_size: 384
       num_transformer_blocks: 4
@@ -34,12 +36,12 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-    predictor_batch_repeat: 4
+    predictor_batch_repeat: 1
     depthsmart_mode: disabled
-    target_norm_mode: running-batchnorm
+    target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.25
-    predictor_target_capacity: 0.25
+    predictor_context_capacity: 1.0
+    predictor_target_capacity: 1.0
   mode: train
   validate_every_num_epochs: 10
