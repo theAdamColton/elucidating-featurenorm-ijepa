@@ -68,6 +68,7 @@ class MainConfig:
     num_register_tokens: int = 0
     min_context_capacity: float = 0.05
     max_context_capacity: float = 0.95
+    absolute_max_context_capacity: float = 0.5
 
     model: IJEPADepthSmartConfig = field(
         default_factory=lambda: IJEPADepthSmartConfig()
@@ -106,6 +107,7 @@ def main(conf: MainConfig = MainConfig()):
         patch_size=patch_size,
         min_context_capacity=conf.min_context_capacity,
         max_context_capacity=conf.max_context_capacity,
+        absolute_max_context_capacity=conf.absolute_max_context_capacity,
     )
 
     training_state = dict(global_step=0, epoch=0)

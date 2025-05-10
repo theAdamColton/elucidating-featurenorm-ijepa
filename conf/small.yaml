@@ -6,7 +6,7 @@ conf:
   num_workers: 8
   ema_beta_start: 0.85
   ema_beta: 0.996
-  ema_beta_warmup_steps: 5000
+  ema_beta_warmup_steps: 500
   start_lr: 1e-4
   lr: 5e-4
   interp_warmup_steps: 30000
@@ -24,24 +24,27 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: dyntanh
+      norm_out_mode: disabled
     predictor:
       input_size: 384
-      num_transformer_blocks: 4
+      num_transformer_blocks: 6
       block_config:
         mlp_config:
-          embed_dim: 384
+          embed_dim: 256
           num_experts: 8
         attention_config:
-          embed_dim: 384
+          embed_dim: 256
           head_dim: 64
           num_attention_heads: 6
-    predictor_batch_repeat: 1
+    predictor_batch_repeat: 4
     depthsmart_mode: disabled
-    target_norm_mode: disabled
+    target_norm_mode: batchnorm
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 1.0
-    predictor_target_capacity: 1.0
+    predictor_context_capacity: 0.5
+    predictor_target_capacity: 0.25
   mode: train
   validate_every_num_epochs: 10
+  min_context_capacity: 0.25
+  max_context_capacity: 0.95
+  absolute_max_context_capacity: 0.25

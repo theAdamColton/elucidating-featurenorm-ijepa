@@ -476,6 +476,7 @@ def get_context_target_dataset(
     num_register_tokens: int = 8,
     min_context_capacity: float = 0.05,
     max_context_capacity: float = 0.95,
+    absolute_max_context_capacity: float = 0.5,
 ):
     resize_multiple_of = patch_size * mask_window_size
 
@@ -494,7 +495,9 @@ def get_context_target_dataset(
     # TODO try to reproduce good run by masking high resolution inputs more than
     # low resolution inputs
     # TODO add this as configurable option
-    max_context_sequence_length = max_sequence_length // 2
+    max_context_sequence_length = int(
+        round(max_sequence_length * absolute_max_context_capacity)
+    )
     min_context_windows = int(
         (max_sequence_length // mask_window_size**2) * min_context_capacity
     )
