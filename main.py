@@ -56,6 +56,7 @@ class MainConfig:
     ema_beta_start: float = 0.2
     ema_beta_warmup_steps: int = 1000
 
+    should_interp: bool = False
     interp_warmup_steps: int = 100000
 
     # Webdataset tars
@@ -325,9 +326,11 @@ def main(conf: MainConfig = MainConfig()):
                     x_patches = (x_patches / 255) * 2 - 1
                     y_patches = (y_patches / 255) * 2 - 1
 
-                    interp = min(
-                        1, training_state["global_step"] / conf.interp_warmup_steps
-                    )
+                    interp = 0
+                    if conf.should_interp:
+                        interp = min(
+                            1, training_state["global_step"] / conf.interp_warmup_steps
+                        )
 
                     ema_beta = (
                         min(
