@@ -55,12 +55,12 @@ def _batch_embeddings(data, batch_size=2048):
         collated_batch_size = sum(x.size(0) for x in collated_batches)
 
         if collated_batch_size >= batch_size:
-            batch = [collated_batches[:-1]]
+            batch = collated_batches[:-1]
             remainder = batch_size - collated_batch_size
-            batch.append(collated_batches[-1][:remainder])
+            batch.append(collated_batches[-1].iloc[:remainder])
             batch = ts.cat(batch, 0)
             batch = batch.columns
-            collated_batches = [collated_batches[-1][remainder:]]
+            collated_batches = [collated_batches[-1].iloc[remainder:]]
             yield batch
 
     if len(collated_batches) > 0:

@@ -4,11 +4,11 @@ conf:
   device: cuda
   batch_size: 256
   num_workers: 8
-  ema_beta_start: 0.995
-  ema_beta: 0.9999
-  ema_beta_warmup_steps: 150000
+  ema_beta_start: 0.85
+  ema_beta: 0.996
+  ema_beta_warmup_steps: 500
   start_lr: 1e-4
-  lr: 1e-3
+  lr: 5e-4
   interp_warmup_steps: 30000
   train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
   val_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar
@@ -27,7 +27,7 @@ conf:
       norm_out_mode: adanorm
     predictor:
       input_size: 384
-      num_transformer_blocks: 2
+      num_transformer_blocks: 6
       block_config:
         mlp_config:
           embed_dim: 256
@@ -36,15 +36,15 @@ conf:
           embed_dim: 256
           head_dim: 64
           num_attention_heads: 6
-    predictor_batch_repeat: 8
-    depthsmart_mode: disabled
+    predictor_batch_repeat: 4
+    depthsmart_mode: random-layers
     target_norm_mode: layernorm
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.5
-    predictor_target_capacity: 0.125
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
   mode: train
   validate_every_num_epochs: 10
-  min_context_capacity: 0.25
+  min_context_capacity: 0.5
   max_context_capacity: 0.75
   absolute_max_context_capacity: 0.75
