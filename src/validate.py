@@ -247,7 +247,7 @@ def validate(
                 detshuffle=True,
                 seed=random.randint(0, 2**30),
             )
-            .shuffle(1000)
+            .shuffle(16)
             .decode()
             .to_tuple("features.npy", "label.npy")
             .compose(batch_embeddings(validation_probe_batch_size))
