@@ -371,7 +371,10 @@ class Encoder(nn.Module):
 
         elif return_all_layer_features:
             if config.norm_out_mode == "adanorm":
-                all_layer_features = self.norm_out(all_layer_features, temb)
+                # Don't use affine
+                all_layer_features = F.layer_norm(
+                    all_layer_features, (all_layer_features.shape[-1],)
+                )
             elif config.norm_out_mode == "batchnorm":
                 # TODO
                 # Don't want this to contribute to RunningBatchNorm estimations

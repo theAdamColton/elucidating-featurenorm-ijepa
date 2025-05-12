@@ -12,6 +12,8 @@ from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
 
+import tensorset as ts
+
 from src.dataset import get_test_dataset
 from src.model import IJEPADepthSmart
 
@@ -36,6 +38,38 @@ class MultiDepthClassifier(nn.Module):
         loss = F.cross_entropy(logits, lab)
 
         return preds, loss
+
+
+def _batch_embeddings(data, batch_size=2048):
+    collated_batches = []
+    for sample in data:
+        embeddings, labels, *_ = sample
+
+        embeddings = torch.from_numpy(embeddings)
+        labels = torch.from_numpy(labels)
+
+        new_batch = ts.TensorSet(embeddings, labels)
+
+        collated_batches.append(new_batch)
+
+        collated_batch_size = sum(x.size(0) for x in collated_batches)
+
+        if collated_batch_size >= batch_size:
+            batch = [collated_batches[:-1]]
+            remainder = batch_size - collated_batch_size
+            batch.append(collated_batches[-1][:remainder])
+            batch = ts.cat(batch, 0)
+            batch = batch.columns
+            collated_batches = [collated_batches[-1][remainder:]]
+            yield batch
+
+    if len(collated_batches) > 0:
+        batch = ts.cat(collated_batches, 0)
+        batch = batch.columns
+        yield batch
+
+
+batch_embeddings = wds.pipelinefilter(_batch_embeddings)
 
 
 def validate(
@@ -171,15 +205,16 @@ def validate(
                         layer_features = torch.stack(layer_features, 1)
 
                     layer_features = layer_features.cpu().to(torch.float16).numpy()
+                    labels = labels.numpy()
 
-                    for i in range(b):
-                        writer.write(
-                            {
-                                "__key__": uuid.uuid4().hex,
-                                "label.cls": labels[i].item(),
-                                "features.npy": layer_features[i],
-                            }
-                        )
+                    # Write an entire batch to the tar file
+                    writer.write(
+                        {
+                            "__key__": uuid.uuid4().hex,
+                            "label.npy": labels,
+                            "features.npy": layer_features,
+                        }
+                    )
 
                     if test_mode:
                         break
@@ -214,7 +249,8 @@ def validate(
             )
             .shuffle(1000)
             .decode()
-            .batched(validation_probe_batch_size)
+            .to_tuple("features.npy", "label.npy")
+            .compose(batch_embeddings(validation_probe_batch_size))
         )
         train_dataloader = (
             wds.WebLoader(
@@ -231,7 +267,7 @@ def validate(
             range(validation_train_epochs), desc="training val classifier"
         ):
             for batch in train_dataloader:
-                emb, lab = batch.pop("features.npy"), batch.pop("label.cls")
+                emb, lab, *_ = batch
 
                 emb = emb.to(device, torch.float32)
                 lab = lab.to(device)
@@ -251,7 +287,8 @@ def validate(
         test_dataset = (
             wds.WebDataset(test_tar_urls, empty_check=False)
             .decode()
-            .batched(validation_probe_batch_size)
+            .to_tuple("features.npy", "label.npy")
+            .compose(batch_embeddings(validation_probe_batch_size))
         )
         test_dataloader = DataLoader(
             test_dataset, num_workers=num_workers, batch_size=None
@@ -263,7 +300,7 @@ def validate(
             test_dataloader,
             desc="testing probe",
         ):
-            emb, lab = batch.pop("features.npy"), batch.pop("label.cls")
+            emb, lab, *_ = batch
 
             emb = emb.to(device, torch.float32)
             lab = lab.to(device)
