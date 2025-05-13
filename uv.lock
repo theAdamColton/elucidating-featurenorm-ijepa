@@ -480,6 +480,7 @@ dependencies = [
     { name = "numpy" },
     { name = "tensorset" },
     { name = "torch" },
+    { name = "torch-pca" },
     { name = "torchvision" },
     { name = "transformers" },
     { name = "wandb", extra = ["media"] },
@@ -500,6 +501,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.5" },
     { name = "tensorset", specifier = ">=0.4.2" },
     { name = "torch", specifier = ">=2.7.0" },
+    { name = "torch-pca", specifier = ">=1.1.0" },
     { name = "torchvision", specifier = ">=0.22.0" },
     { name = "transformers", specifier = ">=4.51.3" },
     { name = "wandb", extras = ["media"], specifier = ">=0.19.10" },
@@ -1490,6 +1492,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9d/f5/0bd30e9da04c3036614aa1b935a9f7e505a9e4f1f731b15e165faf8a4c74/torch-2.7.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:176300ff5bc11a5f5b0784e40bde9e10a35c4ae9609beed96b4aeb46a27f5fae", size = 865104023 },
     { url = "https://files.pythonhosted.org/packages/d1/b7/2235d0c3012c596df1c8d39a3f4afc1ee1b6e318d469eda4c8bb68566448/torch-2.7.0-cp313-cp313t-win_amd64.whl", hash = "sha256:d0ca446a93f474985d81dc866fcc8dccefb9460a29a456f79d99c29a78a66993", size = 212750916 },
     { url = "https://files.pythonhosted.org/packages/90/48/7e6477cf40d48cc0a61fa0d41ee9582b9a316b12772fcac17bc1a40178e7/torch-2.7.0-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:27f5007bdf45f7bb7af7f11d1828d5c2487e030690afb3d89a651fd7036a390e", size = 68575074 },
+]
+
+[[package]]
+name = "torch-pca"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e5/c3/b930921e991842f20fd106068e45c39bc5f43529a166cc4f42612ca4b34f/torch_pca-1.1.0.tar.gz", hash = "sha256:096963335e32089e7262755b5344bc7b0cd02cd4daa9445b62b662299229be63", size = 92760 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/16/9753276886dfb5e4ad7f379fd63fa44518bd139f012b5916962b8b766444/torch_pca-1.1.0-py3-none-any.whl", hash = "sha256:c20ea3111a64f93b3beef914afdeb640e12e99834f9dc276fa829479d6b236af", size = 13787 },
 ]
 
 [[package]]

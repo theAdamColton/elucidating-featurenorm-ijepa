@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=2.2.5",
     "tensorset>=0.4.2",
     "torch>=2.7.0",
+    "torch-pca>=1.1.0",
     "torchvision>=0.22.0",
     "transformers>=4.51.3",
     "wandb[media]>=0.19.10",

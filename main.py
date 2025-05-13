@@ -17,6 +17,37 @@ import wandb
 from src.dataset import get_context_target_dataset, MASK_SEQUENCE_ID
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
 from src.validate import validate
+from src.visualize_embeddings import features_to_rgb
+
+
+def get_viz_output_path():
+    viz_output_path = (
+        Path(".") / "viz-outputs" / datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    viz_output_path.mkdir(parents=True)
+    return viz_output_path
+
+
+def prepare_context_target(x_patches_ts, y_patches_ts, device, dtype):
+    x_patches = x_patches_ts.named_columns.pop("patches")
+    x_position_ids = x_patches_ts.named_columns.pop("position_ids")
+    x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
+    x_token_ids = torch.cat((x_sequence_ids.unsqueeze(-1), x_position_ids), -1)
+
+    y_patches = y_patches_ts.named_columns.pop("patches")
+    y_position_ids = y_patches_ts.named_columns.pop("position_ids")
+    y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
+    y_token_ids = torch.cat((y_sequence_ids.unsqueeze(-1), y_position_ids), -1)
+
+    x_patches = x_patches.to(device=device, dtype=dtype, non_blocking=True)
+    y_patches = y_patches.to(device=device, dtype=dtype, non_blocking=True)
+    x_token_ids = x_token_ids.to(device, non_blocking=True)
+    y_token_ids = y_token_ids.to(device, non_blocking=True)
+
+    x_patches = (x_patches / 255) * 2 - 1
+    y_patches = (y_patches / 255) * 2 - 1
+
+    return x_patches, x_token_ids, y_patches, y_token_ids
 
 
 @dataclass
@@ -75,7 +106,7 @@ class MainConfig:
         default_factory=lambda: IJEPADepthSmartConfig()
     )
 
-    mode: Literal["make-viz", "train", "validate"] = "train"
+    mode: Literal["make-viz", "train", "validate", "visualize-embeddings"] = "train"
 
     def __post_init__(self):
         assert self.batch_size % self.packer_batch_size == 0
@@ -110,6 +141,7 @@ def main(conf: MainConfig = MainConfig()):
         max_context_capacity=conf.max_context_capacity,
         absolute_max_context_capacity=conf.absolute_max_context_capacity,
     )
+    dataloader = DataLoader(dataset, num_workers=conf.num_workers, batch_size=None)
 
     training_state = dict(global_step=0, epoch=0)
 
@@ -119,6 +151,11 @@ def main(conf: MainConfig = MainConfig()):
     optimizer = torch.optim.AdamW(
         trainable_params, lr=conf.start_lr, betas=(0.9, 0.95), weight_decay=0.05
     )
+
+    @contextmanager
+    def autocast_fn():
+        with torch.autocast(device.type, dtype):
+            yield
 
     if conf.resume_path is not None:
 
@@ -134,10 +171,7 @@ def main(conf: MainConfig = MainConfig()):
         sample = next(iter(dataset))
 
         # Decode and save one batch of images
-        viz_output_path = (
-            Path(".") / "viz-outputs" / datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        )
-        viz_output_path.mkdir(parents=True)
+        viz_output_path = get_viz_output_path()
 
         # overlay a black X-mark line on for all context tokens
         patch_border = torch.ones(patch_size, patch_size, num_image_channels)
@@ -237,13 +271,86 @@ def main(conf: MainConfig = MainConfig()):
         )
         print("ACCURACIES", accuracies)
 
-    elif conf.mode == "train":
-        # accelerator = Accelerator()
-
-        train_dataloader = DataLoader(
-            dataset, num_workers=conf.num_workers, batch_size=None
+    elif conf.mode == "visualize-embeddings":
+        batch = next(iter(dataloader))
+        x_patches_ts, y_patches_ts, *_ = batch
+        x_patches, x_token_ids, y_patches, y_token_ids = prepare_context_target(
+            x_patches_ts, y_patches_ts, device, dtype
         )
 
+        # cat context and target
+        y_patches = torch.cat((x_patches, y_patches), 1)
+        y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
+
+        b, s, d = y_patches.shape
+        t = torch.full((b, s), conf.model.encoder.num_transformer_blocks, device=device)
+
+        with autocast_fn():
+            with torch.inference_mode():
+                embeddings, *_ = model.ema_encoder(
+                    x=y_patches, t=t, token_ids=y_token_ids
+                )
+
+        *_, hidden_d = embeddings.shape
+
+        embeddings = embeddings.cpu().float()
+        y_token_ids = y_token_ids.cpu()
+        y_patches = (y_patches.cpu().float() + 1) / 2
+        y_patches = y_patches.clip(0, 1) * 255
+        y_patches = y_patches.to(torch.uint8)
+
+        viz_output_path = get_viz_output_path()
+
+        for i in range(b):
+            sequence_ids, position_ids = y_token_ids[i, :, 0], y_token_ids[i, :, -2:]
+
+            unique_sequence_ids = sequence_ids.unique().tolist()
+            if MASK_SEQUENCE_ID in unique_sequence_ids:
+                unique_sequence_ids.remove(MASK_SEQUENCE_ID)
+            for sequence_id in unique_sequence_ids:
+                sequence_mask = sequence_ids == sequence_id
+
+                sample_position_ids = position_ids[sequence_mask]
+                sample_tokens = y_patches[i][sequence_mask]
+                sample_embeddings = embeddings[i][sequence_mask]
+
+                s, d = sample_tokens.shape
+
+                nph, npw = (sample_position_ids + 1).amax(0).tolist()
+
+                unpacked_pixel_image = torch.zeros(nph, npw, d, dtype=torch.uint8)
+                unpacked_embedding_image = torch.zeros(
+                    nph, npw, hidden_d, dtype=torch.uint8
+                )
+
+                for j in range(s):
+                    hid, wid = sample_position_ids[j]
+                    unpacked_pixel_image[hid, wid] = sample_tokens[j]
+                    unpacked_embedding_image[hid, wid] = sample_embeddings[j]
+
+                unpacked_embedding_image = features_to_rgb(unpacked_embedding_image)
+
+                unpacked_embedding_image = einx.rearrange(
+                    "nph npw c -> c nph npw", unpacked_embedding_image
+                )
+                unpacked_pixel_image = einx.rearrange(
+                    "nph npw (ph pw c) -> c (nph ph) (npw pw)",
+                    unpacked_pixel_image,
+                    ph=patch_size,
+                    pw=patch_size,
+                    c=conf.num_image_channels,
+                )
+                c, h, w = unpacked_pixel_image.shape
+                unpacked_embedding_image = torchvision.transforms.Resize((h, w))(
+                    unpacked_embedding_image
+                )
+                image = torch.cat((unpacked_pixel_image, unpacked_embedding_image), -1)
+
+                output_path = viz_output_path / f"{i:05} {sequence_id:08}.png"
+                torchvision.io.write_png(image, str(output_path))
+                print("Wrote", output_path)
+
+    elif conf.mode == "train":
         conf_d = asdict(conf)
         conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
 
@@ -289,42 +396,16 @@ def main(conf: MainConfig = MainConfig()):
             )
             print("Saved to ", save_path)
 
-        @contextmanager
-        def autocast_fn():
-            with torch.autocast(device.type, dtype):
-                yield
-
         for epoch in range(training_state["epoch"], conf.num_epochs):
 
             def train_epoch():
-                for batch in tqdm(train_dataloader, desc=f"training epoch {epoch}"):
+                for batch in tqdm(dataloader, desc=f"training epoch {epoch}"):
                     x_patches_ts, y_patches_ts, *_ = batch
-
-                    x_patches = x_patches_ts.named_columns.pop("patches")
-                    x_position_ids = x_patches_ts.named_columns.pop("position_ids")
-                    x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
-                    x_token_ids = torch.cat(
-                        (x_sequence_ids.unsqueeze(-1), x_position_ids), -1
+                    x_patches, x_token_ids, y_patches, y_token_ids = (
+                        prepare_context_target(
+                            x_patches_ts, y_patches_ts, device, dtype
+                        )
                     )
-
-                    y_patches = y_patches_ts.named_columns.pop("patches")
-                    y_position_ids = y_patches_ts.named_columns.pop("position_ids")
-                    y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
-                    y_token_ids = torch.cat(
-                        (y_sequence_ids.unsqueeze(-1), y_position_ids), -1
-                    )
-
-                    x_patches = x_patches.to(
-                        device=device, dtype=dtype, non_blocking=True
-                    )
-                    y_patches = y_patches.to(
-                        device=device, dtype=dtype, non_blocking=True
-                    )
-                    x_token_ids = x_token_ids.to(device, non_blocking=True)
-                    y_token_ids = y_token_ids.to(device, non_blocking=True)
-
-                    x_patches = (x_patches / 255) * 2 - 1
-                    y_patches = (y_patches / 255) * 2 - 1
 
                     interp = 0
                     if conf.should_interp:

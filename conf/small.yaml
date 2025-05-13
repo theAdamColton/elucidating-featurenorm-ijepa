@@ -24,7 +24,8 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: adanorm
+      norm_out_mode: disabled
+      norm_elementwise_affine: true
     predictor:
       input_size: 384
       num_transformer_blocks: 6
@@ -37,8 +38,8 @@ conf:
           head_dim: 64
           num_attention_heads: 6
     predictor_batch_repeat: 4
-    depthsmart_mode: random-layers
-    target_norm_mode: layernorm
+    depthsmart_mode: disabled
+    target_norm_mode: batchnorm
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25
