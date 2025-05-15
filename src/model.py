@@ -398,6 +398,7 @@ class Encoder(nn.Module):
 @dataclass
 class PredictorConfig:
     input_size: int = 64
+    should_mlp_in: bool = False
 
     num_transformer_blocks: int = 2
     block_config: TransformerBlockConfig = field(
@@ -422,8 +423,12 @@ class Predictor(nn.Module):
         self.hidden_size = config.block_config.mlp_config.embed_dim
         self.head_dim = config.block_config.attention_config.head_dim
 
-        if config.input_size == self.hidden_size:
-            self.proj_in = nn.Identity()
+        if config.should_mlp_in:
+            self.proj_in = nn.Sequential(
+                nn.Linear(config.input_size, config.input_size * 4),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(config.input_size * 4, self.hidden_size),
+            )
         else:
             self.proj_in = nn.Linear(config.input_size, self.hidden_size)
 
@@ -434,14 +439,15 @@ class Predictor(nn.Module):
         )
         init.trunc_normal_(self.reg_emb, std=0.02)
 
-        self.h_emb = nn.Parameter(
-            torch.empty(config.max_num_height_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.h_emb, std=0.02)
-        self.w_emb = nn.Parameter(
-            torch.empty(config.max_num_width_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.w_emb, std=0.02)
+        if config.use_abs_pos_emb:
+            self.h_emb = nn.Parameter(
+                torch.empty(config.max_num_height_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.h_emb, std=0.02)
+            self.w_emb = nn.Parameter(
+                torch.empty(config.max_num_width_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.w_emb, std=0.02)
 
         self.pred_emb = nn.Parameter(torch.empty(self.hidden_size))
         init.trunc_normal_(self.pred_emb, std=0.02)

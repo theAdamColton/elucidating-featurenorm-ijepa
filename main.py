@@ -1,4 +1,5 @@
 from typing import Literal
+import yaml
 import gc
 from contextlib import contextmanager
 from tqdm import tqdm
@@ -8,6 +9,7 @@ import numpy as np
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import torchvision
 import random
 import torch
@@ -161,9 +163,12 @@ def main(conf: MainConfig = MainConfig()):
 
         def _load():
             d = torch.load(conf.resume_path, map_location=device, weights_only=False)
-            model.load_state_dict(d["model"])
+            model.load_state_dict(d["model"], strict=False)
             training_state.update(d["training_state"])
-            optimizer.load_state_dict(d["optimizer"])
+            try:
+                optimizer.load_state_dict(d["optimizer"])
+            except Exception as e:
+                print("Could not load optimizer state dict! Error:", e)
 
         _load()
 
@@ -320,7 +325,7 @@ def main(conf: MainConfig = MainConfig()):
 
                 unpacked_pixel_image = torch.zeros(nph, npw, d, dtype=torch.uint8)
                 unpacked_embedding_image = torch.zeros(
-                    nph, npw, hidden_d, dtype=torch.uint8
+                    nph, npw, hidden_d, dtype=torch.float32
                 )
 
                 for j in range(s):
@@ -328,10 +333,23 @@ def main(conf: MainConfig = MainConfig()):
                     unpacked_pixel_image[hid, wid] = sample_tokens[j]
                     unpacked_embedding_image[hid, wid] = sample_embeddings[j]
 
+                unpacked_embedding_image = einx.rearrange(
+                    "nph npw d -> one d nph npw", unpacked_embedding_image, one=1
+                )
+                unpacked_embedding_image = F.interpolate(
+                    unpacked_embedding_image,
+                    scale_factor=(patch_size, patch_size),
+                    mode="bilinear",
+                    antialias=True,
+                )
+                unpacked_embedding_image = einx.rearrange(
+                    "one d h w -> one h w d", unpacked_embedding_image
+                ).squeeze(0)
+
                 unpacked_embedding_image = features_to_rgb(unpacked_embedding_image)
 
                 unpacked_embedding_image = einx.rearrange(
-                    "nph npw c -> c nph npw", unpacked_embedding_image
+                    "h w c -> c h w", unpacked_embedding_image
                 )
                 unpacked_pixel_image = einx.rearrange(
                     "nph npw (ph pw c) -> c (nph ph) (npw pw)",
@@ -340,10 +358,7 @@ def main(conf: MainConfig = MainConfig()):
                     pw=patch_size,
                     c=conf.num_image_channels,
                 )
-                c, h, w = unpacked_pixel_image.shape
-                unpacked_embedding_image = torchvision.transforms.Resize((h, w))(
-                    unpacked_embedding_image
-                )
+
                 image = torch.cat((unpacked_pixel_image, unpacked_embedding_image), -1)
 
                 output_path = viz_output_path / f"{i:05} {sequence_id:08}.png"
@@ -380,7 +395,9 @@ def main(conf: MainConfig = MainConfig()):
                 print("Deleting checkpoint", existing_checkpoint)
                 existing_checkpoint.unlink()
 
-            save_path = checkpoint_folder_path / f"{training_state['epoch']:05}.pt"
+            checkpoint_save_path = (
+                checkpoint_folder_path / f"{training_state['epoch']:05}.pt"
+            )
 
             torch.save(
                 {
@@ -392,9 +409,13 @@ def main(conf: MainConfig = MainConfig()):
                     ),
                     "optimizer": optimizer.state_dict(),
                 },
-                str(save_path),
+                str(checkpoint_save_path),
             )
-            print("Saved to ", save_path)
+            print("Saved checkpoint to ", checkpoint_save_path)
+
+            yaml_save_path = checkpoint_folder_path / "config.yaml"
+            with open(yaml_save_path, "w") as f:
+                yaml.dump(asdict(conf), f)
 
         for epoch in range(training_state["epoch"], conf.num_epochs):
 
