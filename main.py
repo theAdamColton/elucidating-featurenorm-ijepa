@@ -417,7 +417,7 @@ def main(conf: MainConfig = MainConfig()):
             all_losses.extend(batch.tolist())
 
         plt.hist(all_losses, bins=20, density=True, color="skyblue", edgecolor="black")
-        plt.xlabel("loss")
+        plt.xlabel("sample loss")
         plt.ylabel("frequency")
         plot_save_path = output_path / "histogram.png"
         plt.savefig(str(plot_save_path))
@@ -431,7 +431,7 @@ def main(conf: MainConfig = MainConfig()):
             density=True,
             color="skyblue",
         )
-        plt.xlabel("loss")
+        plt.xlabel("sample loss")
         plt.ylabel("frequency")
         plot_save_path = output_path / "cum_histogram.png"
         plt.savefig(str(plot_save_path))
