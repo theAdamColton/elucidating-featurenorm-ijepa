@@ -370,26 +370,7 @@ class Encoder(nn.Module):
             return x, target_hidden_states
 
         elif return_all_layer_features:
-            if config.norm_out_mode == "adanorm":
-                # Don't use affine
-                all_layer_features = F.layer_norm(
-                    all_layer_features, (all_layer_features.shape[-1],)
-                )
-            elif config.norm_out_mode == "batchnorm":
-                # TODO
-                # Don't want this to contribute to RunningBatchNorm estimations
-                self.norm_out.eval()
-                all_layer_features = self.norm_out(all_layer_features)
-                self.norm_out.train()
-            elif config.norm_out_mode == "layernorm":
-                # Don't use affine
-                all_layer_features = F.layer_norm(
-                    all_layer_features, (all_layer_features.shape[-1],)
-                )
-            elif config.norm_out_mode == "dyntanh":
-                # Only use tanh on the final layer features
-                all_layer_features[-1] = self.norm_out(all_layer_features[-1])
-
+            # Do not normalize layer features
             return x, all_layer_features
 
         return (x,)

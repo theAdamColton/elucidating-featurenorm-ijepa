@@ -24,8 +24,8 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: dyntanh
-      norm_elementwise_affine: false
+      norm_out_mode: layernorm
+      norm_elementwise_affine: true
     predictor:
       input_size: 384
       num_transformer_blocks: 6
@@ -39,12 +39,13 @@ conf:
           num_attention_heads: 6
     predictor_batch_repeat: 4
     depthsmart_mode: disabled
-    target_norm_mode: disabled
+    target_norm_mode: layernorm
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25
     predictor_target_capacity: 0.25
   mode: train
+  num_register_tokens: 4
   validate_every_num_epochs: 10
   min_context_capacity: 0.5
   max_context_capacity: 0.75
