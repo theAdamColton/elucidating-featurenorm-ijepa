@@ -1,19 +1,21 @@
 from typing import Literal
+from dataclasses import dataclass, field, asdict
 import yaml
 import gc
 from contextlib import contextmanager
-from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
+import random
+
+from tqdm import tqdm
 import numpy as np
 import einx
 import jsonargparse
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision
-import random
 import torch
-from dataclasses import dataclass, field, asdict
+import matplotlib.pyplot as plt
 import wandb
 
 from src.dataset import get_context_target_dataset, MASK_SEQUENCE_ID
@@ -108,7 +110,9 @@ class MainConfig:
         default_factory=lambda: IJEPADepthSmartConfig()
     )
 
-    mode: Literal["make-viz", "train", "validate", "visualize-embeddings"] = "train"
+    mode: Literal[
+        "make-viz", "train", "validate", "visualize-embeddings", "plot-sample-losses"
+    ] = "train"
 
     def __post_init__(self):
         assert self.batch_size % self.packer_batch_size == 0
@@ -275,6 +279,164 @@ def main(conf: MainConfig = MainConfig()):
             num_register_tokens=conf.num_register_tokens,
         )
         print("ACCURACIES", accuracies)
+
+    elif conf.mode == "plot-sample-losses":
+        batch = next(iter(dataloader))
+        x_patches_ts, y_patches_ts, *_ = batch
+        x_patches, x_token_ids, y_patches, y_token_ids = prepare_context_target(
+            x_patches_ts, y_patches_ts, device, dtype
+        )
+
+        b, x_patches_length, d = x_patches.shape
+
+        sample_ids = torch.cat((x_token_ids, y_token_ids), 1)[..., 0]
+
+        batch_unique_sample_ids = []
+        for i in range(b):
+            unique_sample_ids = torch.unique(sample_ids[i]).tolist()
+            if MASK_SEQUENCE_ID in unique_sample_ids:
+                unique_sample_ids.remove(MASK_SEQUENCE_ID)
+            batch_unique_sample_ids.append(unique_sample_ids)
+
+        sample_losses = [
+            torch.zeros(len(unique_sample_ids))
+            for unique_sample_ids in batch_unique_sample_ids
+        ]
+
+        # Compute the loss several times, each time using a different context and target
+        iters = 1
+
+        for i in range(iters):
+            all_patches = torch.cat((x_patches, y_patches), 1)
+            all_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
+
+            # Shuffle the patches, to create new random sets of context
+            # and target tokens
+            # Note, that this isn't windowed masking like in the
+            # official context-target dataset
+
+            b, s, d = all_patches.shape
+            indices = torch.rand(b, s).argsort(dim=-1)
+            all_patches = einx.get_at("b [s] d, b n -> b n d", all_patches, indices)
+            all_token_ids = einx.get_at(
+                "b [s] nd, b n -> b n nd", all_token_ids, indices
+            )
+
+            x_patches, y_patches = (
+                all_patches[:, :x_patches_length],
+                all_patches[:, x_patches_length:],
+            )
+            x_token_ids, y_token_ids = (
+                all_token_ids[:, :x_patches_length],
+                all_token_ids[:, x_patches_length:],
+            )
+
+            with torch.inference_mode():
+                with autocast_fn():
+                    result_dict = model(
+                        x_patches,
+                        y_patches,
+                        x_token_ids,
+                        y_token_ids,
+                        return_tokenwise_loss=True,
+                        return_predictor_target_token_ids=True,
+                    )
+
+            # tokenwise loss is the batch repeated loss
+            # from the predictor
+            tokenwise_loss = result_dict["tokenwise_loss"].cpu().float()
+            # target sequence_ids is batch repeated sequence ids fed to the predictor
+            target_sequence_ids = result_dict["predictor_target_token_ids"][
+                ..., 0
+            ].cpu()
+
+            tokenwise_loss = einx.mean("rb ys [d]", tokenwise_loss)
+
+            # Compute the mean loss for each unique sample across the batch
+            for i in range(conf.model.predictor_batch_repeat):
+                for j in range(b):
+                    batch_index = i * b + j
+                    sequence_ids = target_sequence_ids[batch_index]
+                    for k, sample_id in enumerate(batch_unique_sample_ids[j]):
+                        mask = sequence_ids == sample_id
+                        if not mask.any():
+                            continue
+                        sample_loss = tokenwise_loss[batch_index, mask].mean()
+
+                        # Take the mean of sample losses across iterations
+                        # TODO! This doesnt handle the special case
+                        # where sometimes a sample might not be included
+                        # in the loss for a batch because it is randomly dropped
+                        sample_losses[j][k] += sample_loss / iters
+
+        # Save an image for each sample
+        output_path = get_viz_output_path()
+
+        all_patches = all_patches.cpu().float()
+        all_token_ids = all_token_ids.cpu()
+        for i in range(b):
+            for j, sample_id in enumerate(batch_unique_sample_ids[i]):
+                mask = all_token_ids[i, :, 0] == sample_id
+                if not mask.any():
+                    continue
+                sample_patches = all_patches[i, mask]
+                sample_ids = all_token_ids[i, mask]
+
+                sample_patches = (sample_patches + 1) / 2
+
+                sample_position_ids = sample_ids[:, -2:]
+                nph, npw = (sample_position_ids.amax(0) + 1).tolist()
+                unpacked_patches = torch.zeros(nph, npw, d)
+
+                for (hid, wid), patch in zip(sample_position_ids, sample_patches):
+                    unpacked_patches[hid, wid] = patch
+
+                image = einx.rearrange(
+                    "nph npw (ph pw c) -> c (nph ph) (npw pw)",
+                    unpacked_patches,
+                    ph=patch_size,
+                    pw=patch_size,
+                    c=conf.num_image_channels,
+                )
+                image = (image.clip(0, 1) * 255).to(torch.uint8)
+
+                sample_loss = sample_losses[i][j].item()
+                sample_loss = round(sample_loss, 5)
+
+                image_save_path = (
+                    output_path / f"sample-{i:04}-{sample_id:08} loss {sample_loss}.png"
+                )
+
+                torchvision.io.write_png(image, str(image_save_path))
+
+                print("wrote to ", image_save_path)
+
+        # Plot the distribution of the losses
+        all_losses = []
+        for batch in sample_losses:
+            all_losses.extend(batch.tolist())
+
+        plt.hist(all_losses, bins=20, density=True, color="skyblue", edgecolor="black")
+        plt.xlabel("loss")
+        plt.ylabel("frequency")
+        plot_save_path = output_path / "histogram.png"
+        plt.savefig(str(plot_save_path))
+        print("saved to ", plot_save_path)
+        plt.close()
+
+        plt.hist(
+            all_losses,
+            bins=20,
+            cumulative=True,
+            density=True,
+            color="skyblue",
+        )
+        plt.xlabel("loss")
+        plt.ylabel("frequency")
+        plot_save_path = output_path / "cum_histogram.png"
+        plt.savefig(str(plot_save_path))
+        print("saved to ", plot_save_path)
+        plt.close()
 
     elif conf.mode == "visualize-embeddings":
         batch = next(iter(dataloader))

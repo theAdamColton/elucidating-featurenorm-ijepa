@@ -561,6 +561,8 @@ class IJEPADepthSmart(nn.Module):
         y_token_ids: torch.Tensor,
         interp=0,
         return_smooth_rank=False,
+        return_tokenwise_loss=False,
+        return_predictor_target_token_ids=False,
     ):
         config = self.config
         device, dtype = x.device, x.dtype
@@ -740,6 +742,15 @@ class IJEPADepthSmart(nn.Module):
             target_register_ids = token_ids[:, num_ctx_tokens:, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SEQUENCE_ID)
 
-        loss = loss[is_target_mask].mean()
+        result_dict = dict(smooth_rank=smooth_rank)
 
-        return dict(loss=loss, smooth_rank=smooth_rank)
+        if return_tokenwise_loss:
+            result_dict["tokenwise_loss"] = loss
+
+        if return_predictor_target_token_ids:
+            result_dict["predictor_target_token_ids"] = token_ids[:, num_ctx_tokens:]
+
+        loss = loss[is_target_mask].mean()
+        result_dict["loss"] = loss
+
+        return result_dict
