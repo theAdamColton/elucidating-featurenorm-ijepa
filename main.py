@@ -302,6 +302,10 @@ def main(conf: MainConfig = MainConfig()):
             torch.zeros(len(unique_sample_ids))
             for unique_sample_ids in batch_unique_sample_ids
         ]
+        sample_losses_variance = [
+            torch.zeros(len(unique_sample_ids))
+            for unique_sample_ids in batch_unique_sample_ids
+        ]
 
         # Compute the loss several times, each time using a different context and target
         iters = 1
@@ -361,13 +365,17 @@ def main(conf: MainConfig = MainConfig()):
                         mask = sequence_ids == sample_id
                         if not mask.any():
                             continue
+
+                        # Measure the mean sample loss, and the variance of the sample loss
                         sample_loss = tokenwise_loss[batch_index, mask].mean()
+                        sample_loss_variance = tokenwise_loss[batch_index, mask].var()
 
                         # Take the mean of sample losses across iterations
                         # TODO! This doesnt handle the special case
                         # where sometimes a sample might not be included
                         # in the loss for a batch because it is randomly dropped
                         sample_losses[j][k] += sample_loss / iters
+                        sample_losses_variance[j][k] += sample_loss_variance / iters
 
         # Save an image for each sample
         output_path = get_viz_output_path()
@@ -403,8 +411,12 @@ def main(conf: MainConfig = MainConfig()):
                 sample_loss = sample_losses[i][j].item()
                 sample_loss = round(sample_loss, 5)
 
+                sample_loss_variance = sample_losses_variance[i][j].item()
+                sample_loss_variance = round(sample_loss_variance, 5)
+
                 image_save_path = (
-                    output_path / f"sample-{i:04}-{sample_id:08} loss {sample_loss}.png"
+                    output_path
+                    / f"sample-{i:04}-{sample_id:08} loss {sample_loss} variance {sample_loss_variance}.png"
                 )
 
                 torchvision.io.write_png(image, str(image_save_path))
@@ -415,6 +427,10 @@ def main(conf: MainConfig = MainConfig()):
         all_losses = []
         for batch in sample_losses:
             all_losses.extend(batch.tolist())
+
+        all_losses_variance = []
+        for batch in sample_losses_variance:
+            all_losses_variance.extend(batch.tolist())
 
         plt.hist(all_losses, bins=20, density=True, color="skyblue", edgecolor="black")
         plt.xlabel("sample loss")
@@ -434,6 +450,34 @@ def main(conf: MainConfig = MainConfig()):
         plt.xlabel("sample loss")
         plt.ylabel("frequency")
         plot_save_path = output_path / "cum_histogram.png"
+        plt.savefig(str(plot_save_path))
+        print("saved to ", plot_save_path)
+        plt.close()
+
+        plt.hist(
+            all_losses_variance,
+            bins=20,
+            density=True,
+            color="skyblue",
+            edgecolor="black",
+        )
+        plt.xlabel("sample loss variance")
+        plt.ylabel("frequency")
+        plot_save_path = output_path / "histogram_variance.png"
+        plt.savefig(str(plot_save_path))
+        print("saved to ", plot_save_path)
+        plt.close()
+
+        plt.hist(
+            all_losses_variance,
+            bins=20,
+            cumulative=True,
+            density=True,
+            color="skyblue",
+        )
+        plt.xlabel("sample loss variance")
+        plt.ylabel("frequency")
+        plot_save_path = output_path / "cum_histogram_variance.png"
         plt.savefig(str(plot_save_path))
         print("saved to ", plot_save_path)
         plt.close()
