@@ -15,7 +15,20 @@ conf:
   model:
     encoder:
       input_size: 768
-      num_transformer_blocks: 12
+      num_transformer_blocks: 24
+      block_config:
+        mlp_config:
+          embed_dim: 1024
+          num_experts: 8
+        attention_config:
+          embed_dim: 1024
+          head_dim: 64
+          num_attention_heads: 16
+      norm_out_mode: dyntanh
+      norm_elementwise_affine: false
+    predictor:
+      input_size: 1024
+      num_transformer_blocks: 6
       block_config:
         mlp_config:
           embed_dim: 384
@@ -24,22 +37,9 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-      norm_out_mode: layernorm
-      norm_elementwise_affine: true
-    predictor:
-      input_size: 384
-      num_transformer_blocks: 6
-      block_config:
-        mlp_config:
-          embed_dim: 256
-          num_experts: 8
-        attention_config:
-          embed_dim: 256
-          head_dim: 64
-          num_attention_heads: 4
     predictor_batch_repeat: 4
     depthsmart_mode: disabled
-    target_norm_mode: layernorm
+    target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25
