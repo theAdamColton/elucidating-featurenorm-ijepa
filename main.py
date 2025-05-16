@@ -620,8 +620,11 @@ def main(conf: MainConfig = MainConfig()):
             print("Saved checkpoint to ", checkpoint_save_path)
 
             yaml_save_path = checkpoint_folder_path / "config.yaml"
+            conf_dict = asdict(conf)
+            # Hack to allow loading from jsonargparse
+            conf_dict = dict(conf=conf_dict)
             with open(yaml_save_path, "w") as f:
-                yaml.dump(asdict(conf), f)
+                yaml.dump(conf_dict, f)
 
         for epoch in range(training_state["epoch"], conf.num_epochs):
 
