@@ -66,7 +66,7 @@ class MainConfig:
     num_warmup_steps: int = 5000
     start_lr: float = 1e-4
     lr: float = 5e-4
-    num_epochs: int = 100
+    num_epochs: int = 800
 
     patch_size: int = 16
 

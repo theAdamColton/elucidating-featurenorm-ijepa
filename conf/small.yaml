@@ -46,7 +46,7 @@ conf:
     predictor_target_capacity: 0.25
   mode: train
   num_register_tokens: 0
-  validate_every_num_epochs: 20
+  validate_every_num_epochs: 40
   min_context_capacity: 0.25
   max_context_capacity: 0.5
   absolute_max_context_capacity: 0.5

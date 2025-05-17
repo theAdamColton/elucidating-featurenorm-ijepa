@@ -2,6 +2,7 @@ viz-outputs/
 tmp*/
 checkpoints/
 wandb/
+dataset/
 
 # Python-generated files
 __pycache__/
