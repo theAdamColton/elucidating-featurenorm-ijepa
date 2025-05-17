@@ -72,6 +72,7 @@ class MainConfig:
 
     log_every_num_steps: int = 50
     validate_every_num_epochs: int = 10
+    max_num_save_checkpoints: int = 2
 
     validation_probe_lr: float = 1e-3
     validation_image_size: int = 256
@@ -593,9 +594,10 @@ def main(conf: MainConfig = MainConfig()):
 
             existing_checkpoints = list(checkpoint_folder_path.iterdir())
             existing_checkpoints.sort()
-            max_num_checkpoints = 5
 
-            checkpoints_to_delete = existing_checkpoints[:-max_num_checkpoints]
+            checkpoints_to_delete = existing_checkpoints[
+                : -conf.max_num_save_checkpoints
+            ]
 
             for existing_checkpoint in checkpoints_to_delete:
                 print("Deleting checkpoint", existing_checkpoint)
