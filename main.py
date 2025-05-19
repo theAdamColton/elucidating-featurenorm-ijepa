@@ -77,6 +77,7 @@ class MainConfig:
     max_num_save_checkpoints: int = 2
 
     validation_probe_lr: float = 1e-3
+    validation_monocular_depth_lr: float = 1e-4
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_monocular_depth_train_epochs: int = 10
@@ -321,8 +322,7 @@ def main(conf: MainConfig = MainConfig()):
             dtype=dtype,
             test_mode=conf.test_mode,
             should_compile=conf.should_compile,
-            validation_probe_lr=conf.validation_probe_lr,
-            validation_probe_batch_size=conf.validation_probe_batch_size,
+            validation_probe_lr=conf.validation_monocular_depth_lr,
             validation_train_epochs=conf.validation_train_epochs,
             num_register_tokens=conf.num_register_tokens,
         )

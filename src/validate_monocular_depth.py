@@ -24,8 +24,16 @@ def scale_and_shift_depth(x, eps=1e-7):
 
     Equations 5 and 6
     """
-    shift = x.median()
-    scale = (x - shift).abs().mean()
+
+    x_flat = einx.rearrange("b h w -> b (h w)", x)
+
+    shift = x_flat.median(-1, keepdim=True).values
+    scale = (x_flat - shift).abs().mean(-1, keepdim=True)
+
+    # b one -> b one one
+    shift = shift.unsqueeze(-1)
+    scale = scale.unsqueeze(-1)
+
     x = (x - shift) / (scale + eps)
     return x
 
@@ -105,7 +113,6 @@ def validate_monocular_depth_prediction(
     test_mode: bool = False,
     should_compile: bool = False,
     validation_probe_lr: float = 1e-3,
-    validation_probe_batch_size: int = 2048,
     validation_train_epochs: int = 10,
     # Extract features from the last layer of the encoder
     feature_depth: int = -1,
@@ -143,6 +150,8 @@ def validate_monocular_depth_prediction(
             yield
 
     def _compute_losses(pixel_values, token_ids, depth):
+        # scale to [-1,1]
+        pixel_values = (pixel_values / 255) * 2 - 1
         with torch.inference_mode():
             with autocast_fn():
                 _, layer_features = encoder(
@@ -182,8 +191,10 @@ def validate_monocular_depth_prediction(
         loss = loss_ssi + alpha * loss_reg
 
         with torch.no_grad():
-            rmse_loss = F.mse_loss(depth, depth_hat, reduction="none") ** 0.5
-            rmse_loss = einx.mean("b [h] [w]", rmse_loss)
+            # TODO
+            # Is rmse_loss computed between scaled and shifted depth maps?
+            rmse_loss = F.mse_loss(depth, depth_hat, reduction="none")
+            rmse_loss = einx.mean("b [h] [w]", rmse_loss) ** 0.5
 
         return dict(
             loss=loss, loss_ssi=loss_ssi, loss_reg=loss_reg, rmse_loss=rmse_loss
@@ -203,8 +214,6 @@ def validate_monocular_depth_prediction(
                 )
                 token_ids = token_ids.to(device=device, non_blocking=True)
                 depth = depth.to(device=device, dtype=dtype, non_blocking=True)
-                # scale to [-1,1]
-                pixel_values = (pixel_values / 255) * 2 - 1
                 losses = _compute_losses(pixel_values, token_ids, depth)
 
                 loss = losses["loss"]
@@ -234,8 +243,6 @@ def validate_monocular_depth_prediction(
         pixel_values = pixel_values.to(device=device, dtype=dtype, non_blocking=True)
         token_ids = token_ids.to(device=device, non_blocking=True)
         depth = depth.to(device=device, dtype=dtype, non_blocking=True)
-        # scale to [-1,1]
-        pixel_values = (pixel_values / 255) * 2 - 1
         with torch.inference_mode():
             losses = _compute_losses(pixel_values, token_ids, depth)
 
