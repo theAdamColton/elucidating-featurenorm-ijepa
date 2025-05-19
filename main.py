@@ -181,7 +181,7 @@ def main(conf: MainConfig = MainConfig()):
         _load()
 
     if conf.mode == "make-viz":
-        sample = next(iter(dataset))
+        sample = next(iter(dataloader))
 
         # Decode and save one batch of images
         viz_output_path = get_viz_output_path()
@@ -192,7 +192,11 @@ def main(conf: MainConfig = MainConfig()):
         patch_border = patch_border * patch_border.flip(0)
         patch_border = einx.rearrange("ph pw c -> (ph pw c)", patch_border)
 
-        x_patches, y_patches = sample
+        packed_batch, *_ = sample
+        x_patches, y_patches = (
+            packed_batch.iloc[:, :context_sequence_length],
+            packed_batch.iloc[:, context_sequence_length:],
+        )
         x_patches["patches"] = einx.multiply(
             "... d, d", x_patches["patches"], patch_border
         )
