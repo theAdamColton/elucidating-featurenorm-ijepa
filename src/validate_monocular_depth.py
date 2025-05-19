@@ -35,7 +35,7 @@ def scale_and_shift_depth(x, eps=1e-7):
     scale = scale.unsqueeze(-1)
 
     x = (x - shift) / (scale + eps)
-    return x
+    return x, shift, scale
 
 
 def gradient_loss(x, y):
@@ -179,8 +179,8 @@ def validate_monocular_depth_prediction(
         # b one h w -> b h w
         depth_hat = depth_hat.squeeze(1)
 
-        scaled_depth = scale_and_shift_depth(depth)
-        scaled_depth_hat = scale_and_shift_depth(depth_hat)
+        scaled_depth, gt_shift, gt_scale = scale_and_shift_depth(depth)
+        scaled_depth_hat, *_ = scale_and_shift_depth(depth_hat)
 
         loss_ssi = F.mse_loss(scaled_depth, scaled_depth_hat)
 
@@ -190,18 +190,22 @@ def validate_monocular_depth_prediction(
 
         loss = loss_ssi + alpha * loss_reg
 
-        with torch.no_grad():
-            # TODO
-            # Is rmse_loss computed between scaled and shifted depth maps?
-            rmse_loss = F.mse_loss(depth, depth_hat, reduction="none")
-            rmse_loss = einx.mean("b [h] [w]", rmse_loss) ** 0.5
+        with torch.inference_mode():
+            # Scale the model's depth prediction using the shift and scale of the
+            # ground truth, to convert the predictions into the units that the ground truth uses.
+            # This means that we don't expect the model to predict in the units used by ground truth depth map.
+            # Instead, we care about the model focusing on relative differences in depth in the image.
+            depth_hat_gt_space = (scaled_depth_hat * gt_scale) + gt_shift
+            rmse_loss = F.mse_loss(depth, depth_hat_gt_space, reduction="none")
+            rmse_loss = einx.mean("b [h w]", rmse_loss) ** 0.5
 
         return dict(
             loss=loss, loss_ssi=loss_ssi, loss_reg=loss_reg, rmse_loss=rmse_loss
         )
 
     if should_compile:
-        _compute_losses = torch.compile(_compute_losses)
+        encoder = torch.compile(encoder)
+        dpt_head = torch.compile(dpt_head)
 
     def _train():
         train_dataloader = _get_depth_dataloader(train_dataset_pattern, shuffle=True)
