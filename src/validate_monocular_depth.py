@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 
+import torchvision
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -7,9 +8,34 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 import einx
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from src.dataset import TorchImageResizer, get_test_dataset
 from src.model import IJEPADepthSmart
+from src.utils import get_viz_output_path
+
+
+def convert_depth_to_rgb(x, quantile=0.99):
+    x_shape = x.shape
+
+    # Scale x to [0,1]
+    x = einx.rearrange("b ... -> b (...)", x)
+    max = x.quantile(quantile, dim=-1, keepdim=True)
+    min = x.quantile(1 - quantile, dim=-1, keepdim=True)
+    x = (x - min) / (max - min)
+    x = x.reshape(x_shape)
+    x = x.clip(0, 1)
+
+    # Convert to rgb using a colormap
+    x = plt.cm.hot(x)
+    x = torch.from_numpy(x)
+    # discard alpha channel
+    x = x[..., :3]
+    # channels first
+    x = einx.rearrange("... h w c -> ... c h w", x)
+    # to uint8
+    x = (x * 255).to(torch.uint8)
+    return x
 
 
 def scale_and_shift_depth(x, eps=1e-7):
@@ -199,9 +225,11 @@ def validate_monocular_depth_prediction(
             rmse_loss = F.mse_loss(depth, depth_hat_gt_space, reduction="none")
             rmse_loss = einx.mean("b [h w]", rmse_loss) ** 0.5
 
-        return dict(
+        losses = dict(
             loss=loss, loss_ssi=loss_ssi, loss_reg=loss_reg, rmse_loss=rmse_loss
         )
+
+        return losses, depth_hat, depth
 
     if should_compile:
         encoder = torch.compile(encoder)
@@ -218,7 +246,7 @@ def validate_monocular_depth_prediction(
                 )
                 token_ids = token_ids.to(device=device, non_blocking=True)
                 depth = depth.to(device=device, dtype=dtype, non_blocking=True)
-                losses = _compute_losses(pixel_values, token_ids, depth)
+                losses, *_ = _compute_losses(pixel_values, token_ids, depth)
 
                 loss = losses["loss"]
                 loss.backward()
@@ -242,17 +270,46 @@ def validate_monocular_depth_prediction(
 
     validation_dataloader = _get_depth_dataloader(val_dataset_pattern, shuffle=False)
 
+    is_first_batch = True
+    viz_output_path = get_viz_output_path()
+
     all_rmse_losses = []
     for pixel_values, token_ids, depth in tqdm(validation_dataloader):
         pixel_values = pixel_values.to(device=device, dtype=dtype, non_blocking=True)
         token_ids = token_ids.to(device=device, non_blocking=True)
         depth = depth.to(device=device, dtype=dtype, non_blocking=True)
         with torch.inference_mode():
-            losses = _compute_losses(pixel_values, token_ids, depth)
+            losses, depth_hat, depth = _compute_losses(pixel_values, token_ids, depth)
 
         rmse_loss = losses["rmse_loss"]
         rmse_loss = rmse_loss.cpu().float()
         all_rmse_losses.append(rmse_loss)
+
+        if is_first_batch:
+            # Save an image of the predicted depth map
+            pixel_values = pixel_values.cpu().to(torch.uint8)
+            depth_hat = depth_hat.cpu().float()
+            depth = depth.cpu().float()
+
+            depth_hat = convert_depth_to_rgb(depth_hat)
+            depth = convert_depth_to_rgb(depth)
+            pixel_values = einx.rearrange(
+                "b (nph npw) (ph pw c) -> b c (nph ph) (npw pw)",
+                pixel_values,
+                ph=patch_size,
+                pw=patch_size,
+                nph=validation_image_size // patch_size,
+                npw=validation_image_size // patch_size,
+            )
+
+            pixel_values = torch.cat((pixel_values, depth, depth_hat), -1)
+
+            for i, image in enumerate(pixel_values):
+                filename = viz_output_path / f"depth image {i:05}.png"
+                torchvision.io.write_png(image, str(filename))
+                print("Wrote", filename)
+
+        is_first_batch = False
 
         if test_mode:
             break

@@ -24,14 +24,7 @@ from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
 from src.visualize_embeddings import features_to_rgb
-
-
-def get_viz_output_path():
-    viz_output_path = (
-        Path(".") / "viz-outputs" / datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
-    viz_output_path.mkdir(parents=True)
-    return viz_output_path
+from src.utils import get_viz_output_path
 
 
 def prepare_context_target_batch(batch, device, dtype):
@@ -323,7 +316,7 @@ def main(conf: MainConfig = MainConfig()):
             test_mode=conf.test_mode,
             should_compile=conf.should_compile,
             validation_probe_lr=conf.validation_monocular_depth_lr,
-            validation_train_epochs=conf.validation_train_epochs,
+            validation_train_epochs=conf.validation_monocular_depth_train_epochs,
             num_register_tokens=conf.num_register_tokens,
         )
         print("MONOCULAR DEPTH RESULT", result)
