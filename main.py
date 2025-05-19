@@ -348,13 +348,15 @@ def main(conf: MainConfig = MainConfig()):
                 all_token_ids[:, x_patches_length:],
             )
 
+            patches = torch.cat((x_patches, y_patches), 1)
+            token_ids = torch.cat((x_token_ids, y_token_ids), 1)
+
             with torch.inference_mode():
                 with autocast_fn():
                     result_dict = model(
-                        x_patches,
-                        y_patches,
-                        x_token_ids,
-                        y_token_ids,
+                        patches,
+                        token_ids,
+                        context_sequence_length=context_sequence_length,
                         return_tokenwise_loss=True,
                         return_predictor_target_token_ids=True,
                     )
