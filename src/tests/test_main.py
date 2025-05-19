@@ -31,6 +31,11 @@ class TestMain(unittest.TestCase):
         conf.mode = "validate"
         main(conf)
 
+    def test_validate_monocular_depth(self):
+        conf = self.get_mini_conf()
+        conf.mode = "validate-monocular-depth"
+        main(conf)
+
     def test_make_viz_mode(self):
         conf = self.get_mini_conf()
         conf.mode = "make-viz"

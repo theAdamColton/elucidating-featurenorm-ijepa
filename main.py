@@ -22,6 +22,7 @@ import tensorset as ts
 from src.dataset import get_context_target_dataset, MASK_SEQUENCE_ID
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
 from src.validate import validate
+from src.validate_monocular_depth import validate_monocular_depth_prediction
 from src.visualize_embeddings import features_to_rgb
 
 
@@ -103,6 +104,15 @@ class MainConfig:
     label_column_name: str = "cls"
     num_classes: int = 1000
 
+    # Webdataset tars
+    monocular_depth_train_dataset_pattern: str = (
+        "/nvme/nyu-depthv2-wds/nyu-depth-train-00000.tar"
+    )
+    monocular_depth_val_dataset_pattern: str = (
+        "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
+    )
+    depth_column_name: str = "depth.npy"
+
     num_register_tokens: int = 0
     min_context_capacity: float = 0.05
     max_context_capacity: float = 0.95
@@ -113,7 +123,12 @@ class MainConfig:
     )
 
     mode: Literal[
-        "make-viz", "train", "validate", "visualize-embeddings", "plot-sample-losses"
+        "make-viz",
+        "train",
+        "validate",
+        "visualize-embeddings",
+        "plot-sample-losses",
+        "validate-monocular-depth",
     ] = "train"
 
     def __post_init__(self):
@@ -287,6 +302,27 @@ def main(conf: MainConfig = MainConfig()):
             num_register_tokens=conf.num_register_tokens,
         )
         print("ACCURACIES", accuracies)
+
+    elif conf.mode == "validate-monocular-depth":
+        result = validate_monocular_depth_prediction(
+            model=model,
+            image_column_name=conf.image_column_name,
+            depth_column_name=conf.depth_column_name,
+            patch_size=patch_size,
+            validation_image_size=conf.validation_image_size,
+            batch_size=conf.batch_size,
+            num_workers=conf.num_workers,
+            train_dataset_pattern=conf.monocular_depth_train_dataset_pattern,
+            val_dataset_pattern=conf.monocular_depth_val_dataset_pattern,
+            dtype=dtype,
+            test_mode=conf.test_mode,
+            should_compile=conf.should_compile,
+            validation_probe_lr=conf.validation_probe_lr,
+            validation_probe_batch_size=conf.validation_probe_batch_size,
+            validation_train_epochs=conf.validation_train_epochs,
+            num_register_tokens=conf.num_register_tokens,
+        )
+        print("MONOCULAR DEPTH RESULT", result)
 
     elif conf.mode == "plot-sample-losses":
         # TODO test me!
