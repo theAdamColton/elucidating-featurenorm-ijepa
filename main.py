@@ -79,6 +79,9 @@ class MainConfig:
     validation_probe_lr: float = 1e-3
     validation_image_size: int = 256
     validation_train_epochs: int = 50
+    validation_monocular_depth_train_epochs: int = 10
+    # Extract features from the last layer of the encoder to perform monocular depth estimation
+    validation_monocular_depth_feature_depth: int = -1
     validation_probe_batch_size: int = 2048
     validation_depthsmart_mode: Literal["learned", "extract-layers", "lastlayer"] = (
         "extract-layers"
@@ -106,7 +109,7 @@ class MainConfig:
 
     # Webdataset tars
     monocular_depth_train_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-train-00000.tar"
+        "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..13}.tar"
     )
     monocular_depth_val_dataset_pattern: str = (
         "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
@@ -314,6 +317,7 @@ def main(conf: MainConfig = MainConfig()):
             num_workers=conf.num_workers,
             train_dataset_pattern=conf.monocular_depth_train_dataset_pattern,
             val_dataset_pattern=conf.monocular_depth_val_dataset_pattern,
+            feature_depth=conf.validation_monocular_depth_feature_depth,
             dtype=dtype,
             test_mode=conf.test_mode,
             should_compile=conf.should_compile,

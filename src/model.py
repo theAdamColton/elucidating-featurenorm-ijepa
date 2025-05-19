@@ -294,7 +294,7 @@ class Encoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         token_ids: torch.Tensor,
         return_target_hidden_states=False,
         return_all_layer_features=False,
@@ -302,6 +302,11 @@ class Encoder(nn.Module):
         config = self.config
 
         b, s, d = x.shape
+        device, dtype = x.device, x.dtype
+
+        if t is None:
+            num_feature_depth = config.num_transformer_blocks + 1
+            t = torch.full((b, s), num_feature_depth - 1, device=device)
 
         if not torch.compiler.is_compiling():
             assert einx.matches("b s d", x, d=config.input_size)
@@ -309,8 +314,6 @@ class Encoder(nn.Module):
             assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         assert not (return_target_hidden_states and return_all_layer_features)
-
-        device, dtype = x.device, x.dtype
 
         x = self.proj_in(x)
 
