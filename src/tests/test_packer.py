@@ -9,6 +9,12 @@ from src.packer import PairPacker
 
 class TestPacker(unittest.TestCase):
     def test_packer(self):
+        """
+        generate a bunch of random sequence data and metadata,
+        append it to the packer, and make sure that the packer
+        returns it still associated with the ids that it was
+        appended with
+        """
         rng = random.Random()
         torch_rng = torch.Generator()
 

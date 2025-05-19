@@ -17,6 +17,7 @@ import torchvision
 import torch
 import matplotlib.pyplot as plt
 import wandb
+import tensorset as ts
 
 from src.dataset import get_context_target_dataset, MASK_SEQUENCE_ID
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
@@ -32,26 +33,26 @@ def get_viz_output_path():
     return viz_output_path
 
 
-def prepare_context_target(x_patches_ts, y_patches_ts, device, dtype):
-    x_patches = x_patches_ts.named_columns.pop("patches")
-    x_position_ids = x_patches_ts.named_columns.pop("position_ids")
-    x_sequence_ids = x_patches_ts.named_columns.pop("sequence_ids")
-    x_token_ids = torch.cat((x_sequence_ids.unsqueeze(-1), x_position_ids), -1)
+def prepare_context_target_batch(batch, device, dtype):
+    packed_batch, *_ = batch
 
-    y_patches = y_patches_ts.named_columns.pop("patches")
-    y_position_ids = y_patches_ts.named_columns.pop("position_ids")
-    y_sequence_ids = y_patches_ts.named_columns.pop("sequence_ids")
-    y_token_ids = torch.cat((y_sequence_ids.unsqueeze(-1), y_position_ids), -1)
+    if not isinstance(packed_batch, ts.TensorSet):
+        raise ValueError()
 
-    x_patches = x_patches.to(device=device, dtype=dtype, non_blocking=True)
-    y_patches = y_patches.to(device=device, dtype=dtype, non_blocking=True)
-    x_token_ids = x_token_ids.to(device, non_blocking=True)
-    y_token_ids = y_token_ids.to(device, non_blocking=True)
+    position_ids = packed_batch.named_columns.pop("position_ids")
+    sequence_ids = packed_batch.named_columns.pop("sequence_ids")
+    # Token ids contains along the channel dim (sequence_ids, register id, height idx, width idx)
+    token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
 
-    x_patches = (x_patches / 255) * 2 - 1
-    y_patches = (y_patches / 255) * 2 - 1
+    patches = packed_batch.named_columns.pop("patches")
 
-    return x_patches, x_token_ids, y_patches, y_token_ids
+    patches = patches.to(device=device, dtype=dtype, non_blocking=True)
+    token_ids = token_ids.to(device, non_blocking=True)
+
+    # Scale from [0,255] to [-1,1]
+    patches = (patches / 255) * 2 - 1
+
+    return patches, token_ids
 
 
 @dataclass
@@ -135,18 +136,20 @@ def main(conf: MainConfig = MainConfig()):
 
     patch_size = conf.patch_size
 
-    dataset = get_context_target_dataset(
-        dataset_pattern=conf.train_dataset_pattern,
-        seed=conf.seed,
-        image_column_name=conf.image_column_name,
-        label_column_name=conf.label_column_name,
-        batch_size=conf.batch_size,
-        packer_batch_size=conf.packer_batch_size,
-        num_register_tokens=conf.num_register_tokens,
-        patch_size=patch_size,
-        min_context_capacity=conf.min_context_capacity,
-        max_context_capacity=conf.max_context_capacity,
-        absolute_max_context_capacity=conf.absolute_max_context_capacity,
+    dataset, context_sequence_length, target_sequence_length = (
+        get_context_target_dataset(
+            dataset_pattern=conf.train_dataset_pattern,
+            seed=conf.seed,
+            image_column_name=conf.image_column_name,
+            label_column_name=conf.label_column_name,
+            batch_size=conf.batch_size,
+            packer_batch_size=conf.packer_batch_size,
+            num_register_tokens=conf.num_register_tokens,
+            patch_size=patch_size,
+            min_context_capacity=conf.min_context_capacity,
+            max_context_capacity=conf.max_context_capacity,
+            absolute_max_context_capacity=conf.absolute_max_context_capacity,
+        )
     )
     dataloader = DataLoader(dataset, num_workers=conf.num_workers, batch_size=None)
 
@@ -282,11 +285,16 @@ def main(conf: MainConfig = MainConfig()):
         print("ACCURACIES", accuracies)
 
     elif conf.mode == "plot-sample-losses":
+        # TODO test me!
         batch = next(iter(dataloader))
-        x_patches_ts, y_patches_ts, *_ = batch
-        x_patches, x_token_ids, y_patches, y_token_ids = prepare_context_target(
-            x_patches_ts, y_patches_ts, device, dtype
-        )
+
+        patches, token_ids = prepare_context_target_batch(batch, device, dtype)
+
+        x_patches = patches[:, :context_sequence_length]
+        y_patches = patches[:, context_sequence_length:]
+
+        x_token_ids = token_ids[:, :context_sequence_length]
+        y_token_ids = token_ids[:, context_sequence_length:]
 
         b, x_patches_length, d = x_patches.shape
 
@@ -484,11 +492,15 @@ def main(conf: MainConfig = MainConfig()):
         plt.close()
 
     elif conf.mode == "visualize-embeddings":
+        # TODO! test me!
         batch = next(iter(dataloader))
-        x_patches_ts, y_patches_ts, *_ = batch
-        x_patches, x_token_ids, y_patches, y_token_ids = prepare_context_target(
-            x_patches_ts, y_patches_ts, device, dtype
-        )
+        patches, token_ids = prepare_context_target_batch(batch, device, dtype)
+
+        x_patches = patches[:, :context_sequence_length]
+        y_patches = patches[:, context_sequence_length:]
+
+        x_token_ids = token_ids[:, :context_sequence_length]
+        y_token_ids = token_ids[:, context_sequence_length:]
 
         # cat context and target
         y_patches = torch.cat((x_patches, y_patches), 1)
@@ -632,11 +644,8 @@ def main(conf: MainConfig = MainConfig()):
 
             def train_epoch():
                 for batch in tqdm(dataloader, desc=f"training epoch {epoch}"):
-                    x_patches_ts, y_patches_ts, *_ = batch
-                    x_patches, x_token_ids, y_patches, y_token_ids = (
-                        prepare_context_target(
-                            x_patches_ts, y_patches_ts, device, dtype
-                        )
+                    patches, token_ids = prepare_context_target_batch(
+                        batch, device, dtype
                     )
 
                     interp = 0
@@ -660,10 +669,9 @@ def main(conf: MainConfig = MainConfig()):
 
                     with autocast_fn():
                         result_dict = model(
-                            x_patches,
-                            y_patches,
-                            x_token_ids,
-                            y_token_ids,
+                            patches=patches,
+                            token_ids=token_ids,
+                            context_sequence_length=context_sequence_length,
                             interp=interp,
                             return_smooth_rank=should_log,
                         )
@@ -690,12 +698,10 @@ def main(conf: MainConfig = MainConfig()):
 
                     if should_log:
                         num_samples = 0
-                        for ids_seq in x_token_ids[..., 0].cpu():
+                        for ids_seq in token_ids[..., 0].cpu():
                             ids = torch.unique(ids_seq).tolist()
-                            try:
+                            if MASK_SEQUENCE_ID in ids:
                                 ids.remove(MASK_SEQUENCE_ID)
-                            except:
-                                pass
                             num_samples += len(ids)
 
                         wandb.log(

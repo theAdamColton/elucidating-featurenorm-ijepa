@@ -555,24 +555,31 @@ class IJEPADepthSmart(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        x_token_ids: torch.Tensor,
-        y_token_ids: torch.Tensor,
+        patches: torch.Tensor,
+        token_ids: torch.Tensor,
+        context_sequence_length: int = None,
         interp=0,
         return_smooth_rank=False,
         return_tokenwise_loss=False,
         return_predictor_target_token_ids=False,
     ):
+        """
+        Einx notation:
+        b: batch size
+        s: full sequence length of both context and target patches
+        ts: sequence length of tokens that are used as prediction targets
+        xs: context sequence length
+        r: batch repeat of the predictor
+        rb: the total batch size (b * r) of the predictor
+        ps: Predictor's input sequence length
+        nd: the number of channels in the token ids, should be 4
+        """
+
         config = self.config
-        device, dtype = x.device, x.dtype
+        device, dtype = patches.device, patches.dtype
 
-        b, xs, d = x.shape
-
-        y = torch.cat((x, y), 1)
-        y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
-
-        b, ys, d = y.shape
+        b, full_sequence_length, _ = patches.shape
+        target_sequence_length = full_sequence_length - context_sequence_length
 
         num_feature_depth = config.encoder.num_transformer_blocks + 1
 
@@ -585,14 +592,14 @@ class IJEPADepthSmart(nn.Module):
         else:
             raise ValueError(config.depthsmart_mode)
 
-        x_t = einx.rearrange("b -> b xs", t, xs=xs)
-        y_t = einx.rearrange("b -> b ys", t, ys=ys)
+        context_timesteps = einx.rearrange("b -> b xs", t, xs=context_sequence_length)
+        full_timesteps = einx.rearrange("b -> b s", t, s=full_sequence_length)
 
         with torch.no_grad():
             ema_encoder_outputs = self.ema_encoder(
-                y,
-                y_t,
-                y_token_ids,
+                patches,
+                full_timesteps,
+                token_ids,
                 return_target_hidden_states=config.depthsmart_mode == "random-layers",
             )
 
@@ -604,18 +611,21 @@ class IJEPADepthSmart(nn.Module):
             else:
                 target_hidden_states, *_ = ema_encoder_outputs
 
+        y_token_ids = token_ids
         if not config.should_predict_from_all_target:
             # Keep only the target hidden states from
-            # tokens absent from context
-            target_hidden_states = target_hidden_states[:, xs:, :]
-            y_token_ids = y_token_ids[:, xs:, :]
+            # patches absent from context
+            target_hidden_states = target_hidden_states[:, context_sequence_length:, :]
+            y_token_ids = token_ids[:, context_sequence_length:, :]
 
-        b, ts, d = target_hidden_states.shape
+        b, ts, _ = target_hidden_states.shape
 
+        # Potentially do some post processing on the target hidden states
         if config.target_norm_mode == "layernorm":
             target_hidden_states = F.layer_norm(
                 target_hidden_states, (target_hidden_states.shape[-1],)
             )
+
         elif config.target_norm_mode == "batchnorm":
             mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
             mean = einx.mean("[n] d", target_hidden_states[mask])
@@ -627,12 +637,14 @@ class IJEPADepthSmart(nn.Module):
             target_hidden_states = einx.divide(
                 "b ts d, d", target_hidden_states, std.clamp(eps)
             )
+
         elif config.target_norm_mode == "running-batchnorm":
             mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
             target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
 
         elif config.target_norm_mode == "disabled":
             pass
+
         else:
             raise ValueError(config.target_norm_mode)
 
@@ -642,18 +654,21 @@ class IJEPADepthSmart(nn.Module):
                 target_hidden_states.reshape(-1, target_hidden_states.shape[-1])
             )
 
-        x, *_ = self.encoder(x, x_t, x_token_ids)
+        # Forward student with only the context patches
+        x = patches[:, :context_sequence_length]
+        x_token_ids = token_ids[:, :context_sequence_length]
+        x, *_ = self.encoder(x, context_timesteps, x_token_ids)
 
-        # Repeat tensors for prediction
+        # Repeat tensors for predictor
         target_hidden_states = einx.rearrange(
             "b ts d -> (r b) ts d",
             target_hidden_states,
             r=config.predictor_batch_repeat,
         )
-        x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
         y_token_ids = einx.rearrange(
             "b ts nd -> (r b) ts nd", y_token_ids, r=config.predictor_batch_repeat
         )
+        x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
         x_token_ids = einx.rearrange(
             "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
         )
@@ -664,12 +679,17 @@ class IJEPADepthSmart(nn.Module):
 
         # The predictor uses a random subset of the context
         # to predict a random subset of the target
-        num_ctx_tokens = int(round(xs * config.predictor_context_capacity))
+        num_ctx_tokens = int(
+            round(context_sequence_length * config.predictor_context_capacity)
+        )
         num_target_tokens = int(round(ts * config.predictor_target_capacity))
 
         # Random scores for picking context tokens to be used by the predictor
         ctx_scores = torch.rand(
-            config.predictor_batch_repeat * b, xs, device=device, dtype=dtype
+            config.predictor_batch_repeat * b,
+            context_sequence_length,
+            device=device,
+            dtype=dtype,
         )
 
         if config.should_attempt_mask_dropping:
@@ -705,14 +725,11 @@ class IJEPADepthSmart(nn.Module):
         )
 
         if config.depthsmart_mode == "noise":
-            noise_timesteps = einx.rearrange(
-                "b -> (r b)", t, r=config.predictor_batch_repeat
-            )
-            noise = torch.randn_like(target_hidden_states)
             raise NotImplementedError()
 
+        # Prepare the inputs for the predictor
         x = torch.cat((ctx, targets), 1)
-        token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
+        combined_token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
 
         rb, ps, d = x.shape
 
@@ -726,7 +743,7 @@ class IJEPADepthSmart(nn.Module):
 
         t = einx.rearrange("b -> (r b) ps", t, r=config.predictor_batch_repeat, ps=ps)
 
-        x = self.predictor(x, t, token_ids, prediction_mask=prediction_mask)
+        x = self.predictor(x, t, combined_token_ids, prediction_mask=prediction_mask)
         predictions = x[:, num_ctx_tokens:]
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")
@@ -735,11 +752,13 @@ class IJEPADepthSmart(nn.Module):
         # The predictor here is predicting the teacher's register tokens
         # Should these registers be upweighted? Or excluded from loss
 
-        target_sequence_ids = token_ids[:, num_ctx_tokens:, 0]
+        # Exclude masked tokens from the loss
+        target_sequence_ids = combined_token_ids[:, num_ctx_tokens:, 0]
         is_target_mask = target_sequence_ids != MASK_SEQUENCE_ID
 
         if not config.should_predict_register_tokens:
-            target_register_ids = token_ids[:, num_ctx_tokens:, 1]
+            # Exclude register tokens from the loss
+            target_register_ids = combined_token_ids[:, num_ctx_tokens:, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SEQUENCE_ID)
 
         result_dict = dict(smooth_rank=smooth_rank)
@@ -748,7 +767,9 @@ class IJEPADepthSmart(nn.Module):
             result_dict["tokenwise_loss"] = loss
 
         if return_predictor_target_token_ids:
-            result_dict["predictor_target_token_ids"] = token_ids[:, num_ctx_tokens:]
+            result_dict["predictor_target_token_ids"] = combined_token_ids[
+                :, num_ctx_tokens:
+            ]
 
         loss = loss[is_target_mask].mean()
         result_dict["loss"] = loss

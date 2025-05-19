@@ -11,7 +11,7 @@ from src.packer import PairPacker
 MASK_SEQUENCE_ID = -100
 
 
-def collation_fn(samples, combine_tensors=True, combine_scalars=True):
+def tensorset_collation_fn(samples, combine_tensors=True, combine_scalars=True):
     batched = list(zip(*samples))
     result = []
     for b in batched:
@@ -400,13 +400,7 @@ class ContextTargetSplitter:
         return row
 
 
-def verify_patches(sample, name="patches"):
-    assert name in sample
-    patches = sample.get(name)
-    assert isinstance(patches, ts.TensorSet)
-
-
-def _addin_ids(x: ts.TensorSet, id):
+def _addin_sample_ids(x: ts.TensorSet, id):
     x_length = x.size(0)
     ids = torch.full(
         size=(x_length,),
@@ -417,31 +411,43 @@ def _addin_ids(x: ts.TensorSet, id):
     x.named_columns["sequence_ids"] = ids
 
 
+def _verify_patches(sample, name="patches"):
+    assert name in sample
+    patches = sample.get(name)
+    assert isinstance(patches, ts.TensorSet)
+
+
 def _packed_x_y(
     data,
-    sequence_length_x=256,
-    sequence_length_y=256,
+    pack_size_x=256,
+    pack_size_y=256,
     batch_size=16,
     pad_value_dict=dict(),
 ):
     """
-    Packs x,y pairs into two batches
-    an x,y sample will have x and y put in the same sequence of each batch
+    Uses a PairPacker to pack x_patches and y_patches into batches,
+    also saving related sample metadata.
+
+    yields a dict with 'packed_batch' which is a TensorSet and 'packed_metadata'
+     which is a list of dicts, one for each batch element, mapping ids to sample metadata.
     """
     packer = PairPacker(
-        sequence_length_x, sequence_length_y, batch_size, pad_value_dict
+        pack_size_x=pack_size_x,
+        pack_size_y=pack_size_y,
+        batch_size=batch_size,
+        pad_value_dict=pad_value_dict,
     )
     id = 0
     for sample in data:
-        verify_patches(sample, "x_patches")
-        verify_patches(sample, "y_patches")
-        x, y = sample.pop("x_patches"), sample.pop("y_patches")
-        _addin_ids(x, id)
-        _addin_ids(y, id)
-        packer.append(x, y, id, sample)
-        if packer.can_pop_batch():
-            x, y, metadata = packer.pop_batch()
-            yield {"x_patches": x, "y_patches": y, "metadata": metadata}
+        _verify_patches(sample, "x_patches")
+        _verify_patches(sample, "y_patches")
+        x_patches, y_patches = sample.pop("x_patches"), sample.pop("y_patches")
+        _addin_sample_ids(x_patches, id)
+        _addin_sample_ids(y_patches, id)
+        for packed_batch, packed_metadata in packer.append(
+            x_patches, y_patches, id, sample
+        ):
+            yield {"packed_batch": packed_batch, "packed_metadata": packed_metadata}
 
         id += 1
 
@@ -449,7 +455,7 @@ def _packed_x_y(
 packed_x_y = wds.pipelinefilter(_packed_x_y)
 
 
-class ToTensorSet:
+class PatchesToTensorSet:
     def __call__(self, row):
         x = row.pop("x_patches")
         x_position_ids = row.pop("x_position_ids")
@@ -478,6 +484,12 @@ def get_context_target_dataset(
     max_context_capacity: float = 0.95,
     absolute_max_context_capacity: float = 0.5,
 ):
+    """
+    Loads a webdataset containing image files,
+    Randomly resizes, patches, and splits patches into context and target.
+    Then packs context-target pairs, returning packed batches
+    """
+
     resize_multiple_of = patch_size * mask_window_size
 
     max_sequence_length = (max_side_length // patch_size) ** 2
@@ -562,7 +574,7 @@ def get_context_target_dataset(
                 position_id_column_name="y_position_ids",
             )
         )
-        .map(ToTensorSet())
+        .map(PatchesToTensorSet())
         .compose(
             packed_x_y(
                 packer_context_sequence_length,
@@ -571,11 +583,13 @@ def get_context_target_dataset(
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
-        .to_tuple("x_patches", "y_patches")
         .shuffle(shuffle_size_packer)
+        .to_tuple("packed_batch")
         .batched(
-            batch_size // packer_batch_size, collation_fn=collation_fn, partial=False
+            batch_size // packer_batch_size,
+            collation_fn=tensorset_collation_fn,
+            partial=False,
         )
     )
 
-    return dataset
+    return dataset, packer_context_sequence_length, max_y_sequence_length
