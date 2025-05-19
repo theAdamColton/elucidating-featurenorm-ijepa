@@ -302,6 +302,12 @@ def validate_monocular_depth_prediction(
                 npw=validation_image_size // patch_size,
             )
 
+            # Put a white border between the images
+            b, c, h, _ = pixel_values.shape
+            border = torch.full((b, c, h, 4), 255, dtype=torch.uint8)
+            pixel_values = torch.cat((pixel_values, border), -1)
+            depth = torch.cat((depth, border), -1)
+
             pixel_values = torch.cat((pixel_values, depth, depth_hat), -1)
 
             for i, image in enumerate(pixel_values):
