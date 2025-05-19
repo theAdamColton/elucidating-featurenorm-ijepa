@@ -70,12 +70,12 @@ class MainConfig:
     max_num_save_checkpoints: int = 2
 
     validation_probe_lr: float = 1e-3
-    validation_monocular_depth_lr: float = 1e-4
+    validation_monocular_depth_lr: float = 5e-4
     validation_image_size: int = 256
     validation_train_epochs: int = 50
     validation_monocular_depth_train_epochs: int = 10
-    # Extract features from the last layer of the encoder to perform monocular depth estimation
-    validation_monocular_depth_feature_depth: int = -1
+    # Extract features from the 4th to last layer of the encoder to perform monocular depth estimation
+    validation_monocular_depth_feature_depth: int = -4
     validation_probe_batch_size: int = 2048
     validation_depthsmart_mode: Literal["learned", "extract-layers", "lastlayer"] = (
         "extract-layers"

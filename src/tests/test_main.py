@@ -29,6 +29,7 @@ class TestMain(unittest.TestCase):
             device="cpu",
             dtype="float32",
             model=model_conf,
+            validation_monocular_depth_feature_depth=-1,
             batch_size=8,
             packer_batch_size=4,
             test_mode=True,

@@ -138,10 +138,10 @@ def validate_monocular_depth_prediction(
     dtype: torch.dtype = torch.bfloat16,
     test_mode: bool = False,
     should_compile: bool = False,
-    validation_probe_lr: float = 1e-3,
+    validation_probe_lr: float = 5e-4,
     validation_train_epochs: int = 10,
-    # Extract features from the last layer of the encoder
-    feature_depth: int = -1,
+    # Extract features from the 4th to last layer of the encoder
+    feature_depth: int = -4,
     num_register_tokens: int = 0,
 ):
     def _get_depth_dataloader(pattern, shuffle=True):
