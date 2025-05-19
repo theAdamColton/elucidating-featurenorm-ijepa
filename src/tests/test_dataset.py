@@ -1,10 +1,13 @@
+from pathlib import Path
 import unittest
+import random
 
+import einx
 import torch
 import numpy as np
 from PIL import Image
 
-from src.dataset import RandomImageResizer
+from src.dataset import PILImageResizer, RandomImageResizer, TorchImageResizer
 
 
 def make_random_pil_image(h, w):
@@ -14,6 +17,40 @@ def make_random_pil_image(h, w):
 
 
 class DatasetTests(unittest.TestCase):
+    def test_torch_image_resizer_matches_pil_image_resizer(self):
+        """
+        Tests that the torch image resizer has the same behavior
+        as the pil image resizer
+        """
+
+        rng = random.Random()
+        sample_image_folder_path = Path("sample_images")
+        for image_path in sample_image_folder_path.iterdir():
+            image_pil = Image.open(str(image_path))
+            size = rng.randint(64, 384)
+
+            # image_pil = make_random_pil_image(h, w)
+            image_pt = torch.from_numpy(np.array(image_pil))
+            image_pt = einx.rearrange("h w c -> c h w", image_pt)
+
+            resized_pil = PILImageResizer(size)({"pixel_values": image_pil})[
+                "pixel_values"
+            ]
+            resized_pt = TorchImageResizer(size)(image_pt)
+
+            resized_pil = einx.rearrange("h w c -> c h w", resized_pil)
+
+            import torchvision
+
+            torchvision.io.write_png(resized_pil, "resized_pil.png")
+            torchvision.io.write_png(resized_pt, "resized_pt.png")
+
+            self.assertTrue(
+                torch.allclose(
+                    resized_pil / 255, resized_pt / 255, atol=1e-1, rtol=1e-2
+                )
+            )
+
     def test_random_image_resizer_can_make_full_size(self):
         """
         Tests that the random resizer will sometimes resize images

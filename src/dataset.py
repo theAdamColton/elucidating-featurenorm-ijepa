@@ -5,6 +5,7 @@ import torch
 import webdataset as wds
 import tensorset as ts
 import PIL.Image
+import torchvision
 
 from src.packer import PairPacker
 
@@ -55,20 +56,55 @@ def _get_image_dataset(
     return dataset
 
 
-class ImageResizer:
+def get_pil_center_crop_box(h, w):
+    """
+    returns a tuple of (int,int,int,int)
+    indicating (start_width_idx, start_height_idx, end_width_idx, end_height_idx)
+    """
+    crop_size = min(h, h)
+    if h > w:
+        amount_to_crop = h - crop_size
+        box = (0, amount_to_crop // 2, w, amount_to_crop // 2 + crop_size)
+    else:
+        amount_to_crop = w - crop_size
+        box = (amount_to_crop // 2, 0, amount_to_crop // 2 + crop_size, h)
+    return box
+
+
+class TorchImageResizer:
+    """
+    Same behavior as PILImageResizer
+    """
+
+    def __init__(self, size=256):
+        self.size = size
+
+    def __call__(self, x):
+        *_, h, w = x.shape
+        pil_box = get_pil_center_crop_box(h, w)
+        # Convert pil-like (w,h) into torch-like (h,w)
+        box = (pil_box[1], pil_box[0], pil_box[3], pil_box[2])
+        x = x[..., box[0] : box[2], box[1] : box[3]]
+
+        x = torchvision.transforms.Resize((self.size, self.size))(x)
+
+        return x
+
+
+class PILImageResizer:
+    """
+    square crops to min(h,w)
+    and then resizes to the target size using bilinear sampling
+    """
+
     def __init__(self, size=256):
         self.size = size
 
     def __call__(self, row):
         x = row.pop("pixel_values")
         og_w, og_h = x.size
-        crop_size = min(og_h, og_w)
-        if og_h > og_w:
-            amount_to_crop = og_h - crop_size
-            box = (0, amount_to_crop // 2, og_w, amount_to_crop // 2 + crop_size)
-        else:
-            amount_to_crop = og_w - crop_size
-            box = (amount_to_crop // 2, 0, amount_to_crop // 2 + crop_size, og_h)
+
+        box = get_pil_center_crop_box(og_h, og_w)
 
         x = x.convert("RGB").resize(
             size=(self.size, self.size),
@@ -210,7 +246,7 @@ def get_test_dataset(
             image_column_name=image_column_name,
             label_column_name=label_column_name,
         )
-        .map(ImageResizer(image_size))
+        .map(PILImageResizer(image_size))
         .map(ImagePatcher(patch_size))
         .map(TokenFlattener())
         .map(RegisterTokenAdder(num_register_tokens))

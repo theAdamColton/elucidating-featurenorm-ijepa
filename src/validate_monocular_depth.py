@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import einx
 from tqdm import tqdm
 
-from src.dataset import get_test_dataset
+from src.dataset import PILImageResizer, get_test_dataset
 from src.model import IJEPADepthSmart
 
 
@@ -94,6 +94,7 @@ def validate_monocular_depth_prediction(
             )
             .rename(depth=depth_column_name)
             .map_dict(depth=torch.from_numpy)
+            .map_dict(depth=PILImageResizer(validation_image_size))
             .to_tuple("pixel_values", "token_ids", "depth")
         )
         dl = DataLoader(ds, num_workers=num_workers, batch_size=None)
