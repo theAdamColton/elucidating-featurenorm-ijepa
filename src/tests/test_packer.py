@@ -23,8 +23,6 @@ class TestPacker(unittest.TestCase):
         MASK_SAMPLE_ID = -100
         pad_value_dict["sample_ids"] = MASK_SAMPLE_ID
 
-        batches = []
-
         packer = PairPacker(
             pack_size_x=pack_size_x,
             pack_size_y=pack_size_y,
@@ -37,11 +35,16 @@ class TestPacker(unittest.TestCase):
         id_to_data = dict()
         id_to_metadata = dict()
 
-        while len(batches) < num_batches:
+        packed_batches = []
+
+        while len(packed_batches) < num_batches:
+            # generate some randomly lengthed data
             x_sequence_length = rng.randint(1, pack_size_x)
             x_sample_ids = torch.full((x_sequence_length,), id)
             x_named_columns = {
-                name: torch.randn(x_sequence_length, *trailing_shape)
+                name: torch.randn(
+                    x_sequence_length, *trailing_shape, generator=torch_rng
+                )
                 for name, trailing_shape in zip(column_names, trailing_shapes)
             }
             x_named_columns["sample_ids"] = x_sample_ids
@@ -51,7 +54,9 @@ class TestPacker(unittest.TestCase):
             y_sequence_length = rng.randint(1, pack_size_y)
             y_sample_ids = torch.full((y_sequence_length,), id)
             y_named_columns = {
-                name: torch.randn(y_sequence_length, *trailing_shape)
+                name: torch.randn(
+                    y_sequence_length, *trailing_shape, generator=torch_rng
+                )
                 for name, trailing_shape in zip(column_names, trailing_shapes)
             }
             y_named_columns["sample_ids"] = y_sample_ids
@@ -60,12 +65,64 @@ class TestPacker(unittest.TestCase):
 
             metadata = dict(label=rng.randint(0, 2**20))
 
+            # save the ground truth data for later comparison
             id_to_data[id] = (x, y)
             id_to_metadata[id] = metadata
 
+            # add the batch to the packer, and potentially get back a packed batch
             for batch in packer.append(x, y, id, metadata):
-                batches.append(batch)
+                packed_batches.append(batch)
 
-        import bpdb
+            id += 1
 
-        bpdb.set_trace()
+        for tensorset_batch, metadata_batch in packed_batches:
+            sample_ids = tensorset_batch["sample_ids"]
+
+            b, s = sample_ids.shape
+
+            self.assertEqual(batch_size, b)
+            self.assertEqual(pack_size_x + pack_size_y, s)
+
+            for i in range(batch_size):
+                unique_ids = torch.unique(sample_ids[i]).tolist()
+
+                if MASK_SAMPLE_ID in unique_ids:
+                    unique_ids.remove(MASK_SAMPLE_ID)
+
+                self.assertGreater(
+                    len(unique_ids), 0, "should be at least one sample per batch item"
+                )
+
+                for id in unique_ids:
+                    self.assertIn(id, metadata_batch[i])
+
+                    self.assertDictEqual(id_to_metadata[id], metadata_batch[i][id])
+
+                    x_sample_ids, y_sample_ids = (
+                        sample_ids[i, :pack_size_x],
+                        sample_ids[i, pack_size_x:],
+                    )
+                    x_mask = x_sample_ids == id
+                    y_mask = y_sample_ids == id
+
+                    for column_name, column_data in tensorset_batch.iloc[
+                        i
+                    ].named_columns.items():
+                        x_column_data, y_column_data = (
+                            column_data[:pack_size_x],
+                            column_data[pack_size_x:],
+                        )
+
+                        x_sample_data = x_column_data[x_mask]
+                        y_sample_data = y_column_data[y_mask]
+
+                        self.assertTrue(
+                            torch.allclose(
+                                x_sample_data, id_to_data[id][0][column_name]
+                            )
+                        )
+                        self.assertTrue(
+                            torch.allclose(
+                                y_sample_data, id_to_data[id][1][column_name]
+                            )
+                        )

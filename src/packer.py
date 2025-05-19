@@ -125,11 +125,13 @@ class PairPacker:
             buffer = self.batch_buffer[name][i]
 
             x_tensor = x.named_columns[name]
-            buffer[buffer_size_x:x_sequence_length] = x_tensor
+            x_start_idx = buffer_size_x
+            buffer[x_start_idx : x_start_idx + x_sequence_length] = x_tensor
             self.batch_buffer_size_x[i] += x_sequence_length
 
             y_tensor = y.named_columns[name]
-            buffer[self.pack_size_x + buffer_size_y : y_sequence_length] = y_tensor
+            y_start_idx = self.pack_size_x + buffer_size_y
+            buffer[y_start_idx : y_start_idx + y_sequence_length] = y_tensor
             self.batch_buffer_size_y[i] += y_sequence_length
 
     def append(
@@ -165,7 +167,9 @@ class PairPacker:
                 break
 
         if not can_both_fit:
-            yield (self.batch_buffer, self.metadata_buffer)
+            packed_batch = {k: v.clone() for k, v in self.batch_buffer.items()}
+            packed_batch = ts.TensorSet(**packed_batch)
+            yield (packed_batch, self.metadata_buffer)
 
             self._init_or_reset_buffers()
 
