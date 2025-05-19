@@ -11,6 +11,23 @@ from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
 from src.dataset import MASK_SEQUENCE_ID
 
 
+def expand_trailing(y, x):
+    """
+    x has more dimensions than y
+
+    unsqueezes y to match the number of dimensions of x
+    and then expands (repeats) y along these trailing dimensions
+    so that the shapes of x and y match
+    """
+    y_shape = y.shape
+    x_shape = x.shape
+    new_y_shape = list(y_shape) + list(x_shape[len(y_shape) :])
+    for _ in range(len(new_y_shape) - len(y_shape)):
+        y = y.unsqueeze(-1)
+    y = y.expand(new_y_shape)
+    return y
+
+
 def compute_smooth_rank(x, eps=1e-7):
     """
     x: Batch of representations, shape: (B Z)
@@ -286,9 +303,10 @@ class Encoder(nn.Module):
 
         b, s, d = x.shape
 
-        assert einx.matches("b s d", x, d=config.input_size)
-        assert einx.matches("b s", t, b=b, s=s)
-        assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
+        if not torch.compiler.is_compiling():
+            assert einx.matches("b s d", x, d=config.input_size)
+            assert einx.matches("b s", t, b=b, s=s)
+            assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         assert not (return_target_hidden_states and return_all_layer_features)
 
@@ -457,9 +475,10 @@ class Predictor(nn.Module):
 
         b, s, _ = x.shape
 
-        assert einx.matches("b s d", x, d=config.input_size)
-        assert einx.matches("b s", t, b=b, s=s)
-        assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
+        if not torch.compiler.is_compiling():
+            assert einx.matches("b s d", x, d=config.input_size)
+            assert einx.matches("b s", t, b=b, s=s)
+            assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         x = self.proj_in(x)
 
@@ -712,16 +731,18 @@ class IJEPADepthSmart(nn.Module):
 
         target_idx = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
 
-        ctx = einx.get_at("rb [xs] d, rb k -> rb k d", x, context_idx)
-        targets = einx.get_at(
-            "rb [ts] d, rb m -> rb m d", target_hidden_states, target_idx
+        # rb [xs] d, rb k -> rb k d
+        ctx = x.gather(1, expand_trailing(context_idx, x))
+        # rb [ts] d, rb m -> rb m d
+        targets = target_hidden_states.gather(
+            1, expand_trailing(target_idx, target_hidden_states)
         )
 
-        ctx_token_ids = einx.get_at(
-            "rb [xs] nd, rb k -> rb k nd", x_token_ids, context_idx
-        )
-        target_token_ids = einx.get_at(
-            "rb [ts] nd, rb m -> rb m nd", y_token_ids, target_idx
+        # rb [xs] nd, rb k -> rb k nd
+        ctx_token_ids = x_token_ids.gather(1, expand_trailing(context_idx, x_token_ids))
+        # rb [ts] nd, rb m -> rb m nd
+        target_token_ids = y_token_ids.gather(
+            1, expand_trailing(target_idx, y_token_ids)
         )
 
         if config.depthsmart_mode == "noise":
