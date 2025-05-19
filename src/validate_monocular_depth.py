@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import einx
 from tqdm import tqdm
 
-from src.dataset import PILImageResizer, get_test_dataset
+from src.dataset import TorchImageResizer, get_test_dataset
 from src.model import IJEPADepthSmart
 
 
@@ -28,6 +28,36 @@ def scale_and_shift_depth(x, eps=1e-7):
     scale = (x - shift).abs().mean()
     x = (x - shift) / (scale + eps)
     return x
+
+
+def gradient_loss(x, y):
+    """
+    x: b h w
+    y: b h w
+
+    https://arxiv.org/abs/1907.01341
+    Equation 11
+    """
+    diff = y - x
+    grad_x = (diff[:, :, 1:] - diff[:, :, :-1]).abs()
+    grad_y = (diff[:, 1:, :] - diff[:, :-1, :]).abs()
+    loss = grad_x.mean() + grad_y.mean()
+    return loss
+
+
+def multiscale_gradient_loss(x, y, scales=4):
+    """
+    x: b h w
+    y: b h w
+
+    https://arxiv.org/abs/1907.01341
+    Equation 11
+    """
+    loss = 0
+    for scale in range(scales):
+        step = 2**scale
+        loss += gradient_loss(x[:, ::step, ::step], y[:, ::step, ::step])
+    return loss
 
 
 class DPTDepthModel(nn.Module):
@@ -94,7 +124,7 @@ def validate_monocular_depth_prediction(
             )
             .rename(depth=depth_column_name)
             .map_dict(depth=torch.from_numpy)
-            .map_dict(depth=PILImageResizer(validation_image_size))
+            .map_dict(depth=TorchImageResizer(validation_image_size))
             .to_tuple("pixel_values", "token_ids", "depth")
         )
         dl = DataLoader(ds, num_workers=num_workers, batch_size=None)
@@ -107,16 +137,12 @@ def validate_monocular_depth_prediction(
     dpt_head = DPTDepthModel(input_feature_size=encoder.hidden_size).to(device)
     optim = AdamW(dpt_head.parameters(), lr=validation_probe_lr, betas=(0.9, 0.95))
 
-    if should_compile:
-        encoder = torch.compile(encoder)
-        dpt_head = torch.compile(dpt_head)
-
     @contextmanager
     def autocast_fn():
         with torch.autocast(device.type, dtype):
             yield
 
-    def _forward_losses(pixel_values, token_ids, depth):
+    def _compute_losses(pixel_values, token_ids, depth):
         with torch.inference_mode():
             with autocast_fn():
                 _, layer_features = encoder(
@@ -141,15 +167,37 @@ def validate_monocular_depth_prediction(
         _, h, w = depth.shape
         depth_hat = F.interpolate(depth_hat, size=(h, w), mode="bilinear")
 
-        import bpdb
+        # b one h w -> b h w
+        depth_hat = depth_hat.squeeze(1)
 
-        bpdb.set_trace()
+        scaled_depth = scale_and_shift_depth(depth)
+        scaled_depth_hat = scale_and_shift_depth(depth_hat)
+
+        loss_ssi = F.mse_loss(scaled_depth, scaled_depth_hat)
+
+        loss_reg = multiscale_gradient_loss(scaled_depth, scaled_depth_hat)
+
+        alpha = 0.5
+
+        loss = loss_ssi + alpha * loss_reg
+
+        with torch.no_grad():
+            rmse_loss = F.mse_loss(depth, depth_hat, reduction="none") ** 0.5
+            rmse_loss = einx.mean("b [h] [w]", rmse_loss)
+
+        return dict(
+            loss=loss, loss_ssi=loss_ssi, loss_reg=loss_reg, rmse_loss=rmse_loss
+        )
+
+    if should_compile:
+        _compute_losses = torch.compile(_compute_losses)
 
     def _train():
         train_dataloader = _get_depth_dataloader(train_dataset_pattern, shuffle=True)
 
         for epoch in tqdm(range(validation_train_epochs), desc="depth train epoch"):
-            for pixel_values, token_ids, depth in train_dataloader:
+            prog_bar = tqdm(train_dataloader, desc=f"epoch {epoch}")
+            for pixel_values, token_ids, depth in prog_bar:
                 pixel_values = pixel_values.to(
                     device=device, dtype=dtype, non_blocking=True
                 )
@@ -157,8 +205,47 @@ def validate_monocular_depth_prediction(
                 depth = depth.to(device=device, dtype=dtype, non_blocking=True)
                 # scale to [-1,1]
                 pixel_values = (pixel_values / 255) * 2 - 1
-                scaled_loss, rmse_loss = _forward_losses(pixel_values, token_ids, depth)
+                losses = _compute_losses(pixel_values, token_ids, depth)
+
+                loss = losses["loss"]
+                loss.backward()
+                optim.step()
+                optim.zero_grad()
+
+                log_str = " ".join(
+                    [f"{k}:{v.mean().item():.4f}" for k, v in losses.items()]
+                )
+                log_str = f"epoch {epoch} - " + log_str
+                prog_bar.set_description(log_str)
+
+                if test_mode:
+                    break
+            prog_bar.close()
+
+            if test_mode:
+                break
 
     _train()
 
-    # validation_dataloader = _get_depth_dataloader(val_dataset_pattern, shuffle=False)
+    validation_dataloader = _get_depth_dataloader(val_dataset_pattern, shuffle=False)
+
+    all_rmse_losses = []
+    for pixel_values, token_ids, depth in tqdm(validation_dataloader):
+        pixel_values = pixel_values.to(device=device, dtype=dtype, non_blocking=True)
+        token_ids = token_ids.to(device=device, non_blocking=True)
+        depth = depth.to(device=device, dtype=dtype, non_blocking=True)
+        # scale to [-1,1]
+        pixel_values = (pixel_values / 255) * 2 - 1
+        with torch.inference_mode():
+            losses = _compute_losses(pixel_values, token_ids, depth)
+
+        rmse_loss = losses["rmse_loss"]
+        rmse_loss = rmse_loss.cpu().float()
+        all_rmse_losses.append(rmse_loss)
+
+        if test_mode:
+            break
+
+    all_rmse_losses = torch.cat(all_rmse_losses)
+    mean_rmse_loss = all_rmse_losses.mean()
+    return dict(mean_rmse_loss=mean_rmse_loss)
