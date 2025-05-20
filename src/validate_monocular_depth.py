@@ -149,6 +149,7 @@ def validate_monocular_depth_prediction(
     # Extract features from the 4th to last layer of the encoder
     feature_depth: int = -4,
     num_register_tokens: int = 0,
+    log_every_num_steps: int = 50,
 ):
     run = wandb.init(
         project="ijepa-monocular-depth-eval",
@@ -261,6 +262,8 @@ def validate_monocular_depth_prediction(
     def _train():
         train_dataloader = _get_depth_dataloader(train_dataset_pattern, shuffle=True)
 
+        step = 0
+
         for epoch in tqdm(range(validation_train_epochs), desc="depth train epoch"):
             prog_bar = tqdm(train_dataloader, desc=f"epoch {epoch}")
             for pixel_values, token_ids, depth in prog_bar:
@@ -278,11 +281,14 @@ def validate_monocular_depth_prediction(
 
                 log_dict = {k: v.mean().item() for k, v in losses.items()}
 
-                run.log(log_dict)
+                if step % log_every_num_steps == 0:
+                    run.log(log_dict, step=step)
 
                 log_str = " ".join([f"{k}:{v:.4f}" for k, v in log_dict.items()])
                 log_str = f"epoch {epoch} - " + log_str
                 prog_bar.set_description(log_str)
+
+                step += 1
 
                 if test_mode:
                     break

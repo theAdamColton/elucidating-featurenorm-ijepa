@@ -317,6 +317,7 @@ def main(conf: MainConfig = MainConfig()):
             should_compile=conf.should_compile,
             validation_probe_lr=conf.validation_monocular_depth_lr,
             validation_train_epochs=conf.validation_monocular_depth_train_epochs,
+            log_every_num_steps=conf.log_every_num_steps,
             num_register_tokens=conf.num_register_tokens,
         )
         print("MONOCULAR DEPTH RESULT", result)
