@@ -166,12 +166,11 @@ def validate_monocular_depth_prediction(
                 shuffle=shuffle,
                 shuffle_size_samples=shuffle_size_samples,
                 image_column_name=image_column_name,
-                # Don't batch in the workers
-                batch_size=None,
+                batch_size=batch_size,
                 image_size=validation_image_size,
                 patch_size=patch_size,
                 num_register_tokens=num_register_tokens,
-                shuffle_size_batches=1,
+                shuffle_size_batches=16,
             )
             .rename(depth=depth_column_name)
             .map_dict(depth=torch.from_numpy)
@@ -180,12 +179,7 @@ def validate_monocular_depth_prediction(
             .map_dict(depth=_squeeze_channels)
             .to_tuple("pixel_values", "token_ids", "depth")
         )
-        dl = (
-            wds.WebLoader(ds, num_workers=num_workers, batch_size=None)
-            .shuffle(2000)
-            # Batch only after shuffling
-            .batched(batch_size)
-        )
+        dl = wds.WebLoader(ds, num_workers=num_workers, batch_size=None)
         return dl
 
     encoder = model.ema_encoder
@@ -204,13 +198,12 @@ def validate_monocular_depth_prediction(
         # scale to [-1,1]
         pixel_values = (pixel_values / 255) * 2 - 1
         with torch.inference_mode():
-            with autocast_fn():
-                _, layer_features = encoder(
-                    x=pixel_values,
-                    t=None,
-                    token_ids=token_ids,
-                    return_all_layer_features=True,
-                )
+            _, layer_features = encoder(
+                x=pixel_values,
+                t=None,
+                token_ids=token_ids,
+                return_all_layer_features=True,
+            )
 
         features = layer_features[feature_depth].clone()
 
@@ -221,8 +214,7 @@ def validate_monocular_depth_prediction(
             npw=validation_image_size // patch_size,
         )
 
-        with autocast_fn():
-            depth_hat = dpt_head(features)
+        depth_hat = dpt_head(features)
 
         _, h, w = depth.shape
         depth_hat = F.interpolate(depth_hat, size=(h, w), mode="bilinear")
@@ -272,7 +264,8 @@ def validate_monocular_depth_prediction(
                 )
                 token_ids = token_ids.to(device=device, non_blocking=True)
                 depth = depth.to(device=device, dtype=dtype, non_blocking=True)
-                losses, *_ = _compute_losses(pixel_values, token_ids, depth)
+                with autocast_fn():
+                    losses, *_ = _compute_losses(pixel_values, token_ids, depth)
 
                 loss = losses["loss"]
                 loss.backward()
@@ -309,8 +302,12 @@ def validate_monocular_depth_prediction(
         pixel_values = pixel_values.to(device=device, dtype=dtype, non_blocking=True)
         token_ids = token_ids.to(device=device, non_blocking=True)
         depth = depth.to(device=device, dtype=dtype, non_blocking=True)
+
         with torch.inference_mode():
-            losses, depth_hat, depth = _compute_losses(pixel_values, token_ids, depth)
+            with autocast_fn():
+                losses, depth_hat, depth = _compute_losses(
+                    pixel_values, token_ids, depth
+                )
 
         rmse_loss = losses["rmse_loss"]
         rmse_loss = rmse_loss.cpu().float()
