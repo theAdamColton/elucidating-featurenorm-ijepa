@@ -1,4 +1,3 @@
-import os
 import math
 import random
 import numpy as np
@@ -36,16 +35,20 @@ def _get_image_dataset(
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
 ):
+    rng = random.Random(seed)
+
+    shard_shuffle_seed = rng.randint(0, 2**30)
+
     dataset = wds.WebDataset(
         urls=dataset_pattern,
         shardshuffle=1000 if shuffle else None,
-        detshuffle=shuffle,
-        seed=seed,
+        detshuffle=True,
+        seed=shard_shuffle_seed,
         nodesplitter=wds.split_by_node,
         empty_check=False,
     )
 
-    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
+    shuffle_rng = random.Random(seed)
 
     if shuffle:
         dataset = dataset.shuffle(shuffle_size_samples, rng=shuffle_rng)
@@ -260,7 +263,7 @@ def get_test_dataset(
     if batch_size is not None:
         dataset = dataset.batched(batch_size)
 
-    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
+    shuffle_rng = random.Random(seed)
 
     if shuffle:
         dataset = dataset.shuffle(shuffle_size_batches, rng=shuffle_rng)
@@ -288,6 +291,7 @@ class RandomImageResizer:
         min_mult_of_factor=2,
         max_num_pixels=256**2,
         resample_mode=PIL.Image.Resampling.BILINEAR,
+        rng=None,
     ):
         self.max_side_length = max_side_length
         self.min_side_length = min_side_length
@@ -295,6 +299,10 @@ class RandomImageResizer:
         self.min_mult_of_factor = min_mult_of_factor
         self.max_num_pixels = max_num_pixels
         self.resample_mode = resample_mode
+
+        if rng is None:
+            rng = random.Random()
+        self.rng = rng
 
     def __call__(self, row):
         min_side_length = self.min_side_length
@@ -319,7 +327,7 @@ class RandomImageResizer:
         if min_side_length == max_side_length:
             sampled_side_length = min_side_length
         else:
-            sampled_side_length = random.randint(min_side_length, max_side_length)
+            sampled_side_length = self.rng.randint(min_side_length, max_side_length)
 
         scale_factor = sampled_side_length / input_side_length
         new_image_size = (input_w * scale_factor, input_h * scale_factor)
@@ -358,11 +366,18 @@ class ContextTargetSplitter:
         min_context_capacity: float = 0.05,
         max_context_capacity: float = 0.95,
         max_context_sequence_length: int = 128,
+        rng=None,
     ):
         self.window_size = window_size
         self.min_context_capacity = min_context_capacity
         self.max_context_capacity = max_context_capacity
         self.max_context_sequence_length = max_context_sequence_length
+
+        if rng is None:
+            rng = random.Random()
+        self.rng = rng
+
+        self.torch_rng = torch.Generator().manual_seed(rng.randint(0, 2**30))
 
     def __call__(self, row):
         window_size = self.window_size
@@ -402,7 +417,7 @@ class ContextTargetSplitter:
         if num_total_windows == 2:
             num_context_windows = 1
         else:
-            num_context_windows = random.randint(
+            num_context_windows = self.rng.randint(
                 min_num_context_windows, max_num_context_windows
             )
 
@@ -414,7 +429,7 @@ class ContextTargetSplitter:
         idx = patch(idx.unsqueeze(-1), window_size).squeeze(-1)
         # nwh nww wh ww -> (nwh nww) (wh ww)
         idx = idx.reshape(-1, tokens_per_window)
-        shuffle_idx = torch.randperm(num_total_windows)
+        shuffle_idx = torch.randperm(num_total_windows, generator=self.torch_rng)
         idx = idx[shuffle_idx]
         # n (wh ww) -> (n wh ww)
         idx = idx.reshape(-1)
@@ -534,6 +549,11 @@ def get_context_target_dataset(
     Then packs context-target pairs, returning packed batches
     """
 
+    # TODO, the rng is the same for all workers
+    # The shards will be shuffled properly across all workers,
+    # but might effect random context/target or resizing
+    rng = random.Random(seed)
+
     resize_multiple_of = patch_size * mask_window_size
 
     max_sequence_length = (max_side_length // patch_size) ** 2
@@ -576,13 +596,11 @@ def get_context_target_dataset(
         "sequence_ids": MASK_SEQUENCE_ID,
     }
 
-    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
-
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
             shuffle=True,
-            seed=seed,
+            seed=rng.randint(0, 2**30),
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
             label_column_name=label_column_name,
@@ -594,6 +612,7 @@ def get_context_target_dataset(
                 min_side_length=min_side_length,
                 multiple_of=resize_multiple_of,
                 max_num_pixels=max_num_pixels,
+                rng=random.Random(rng.randbytes(16)),
             )
         )
         .map(ImagePatcher(patch_size))
@@ -603,6 +622,7 @@ def get_context_target_dataset(
                 min_context_capacity=min_context_capacity,
                 max_context_capacity=max_context_capacity,
                 max_context_sequence_length=max_context_sequence_length,
+                rng=random.Random(rng.randbytes(16)),
             )
         )
         # Add register tokens only to the context
@@ -629,7 +649,7 @@ def get_context_target_dataset(
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
-        .shuffle(shuffle_size_packer, rng=shuffle_rng)
+        .shuffle(shuffle_size_packer, rng=random.Random(rng.randbytes(16)))
         .to_tuple("packed_batch")
         .batched(
             batch_size // packer_batch_size,

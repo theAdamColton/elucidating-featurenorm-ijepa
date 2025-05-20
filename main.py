@@ -554,18 +554,18 @@ def main(conf: MainConfig = MainConfig()):
         y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
 
         b, s, d = y_patches.shape
-        t = torch.full((b, s), conf.model.encoder.num_transformer_blocks, device=device)
 
         with autocast_fn():
             with torch.inference_mode():
                 embeddings, *_ = model.ema_encoder(
-                    x=y_patches, t=t, token_ids=y_token_ids
+                    x=y_patches, t=None, token_ids=y_token_ids
                 )
 
         *_, hidden_d = embeddings.shape
 
         embeddings = embeddings.cpu().float()
         y_token_ids = y_token_ids.cpu()
+        # Unscale pixel values in patches
         y_patches = (y_patches.cpu().float() + 1) / 2
         y_patches = y_patches.clip(0, 1) * 255
         y_patches = y_patches.to(torch.uint8)
@@ -576,6 +576,8 @@ def main(conf: MainConfig = MainConfig()):
             sequence_ids, position_ids = y_token_ids[i, :, 0], y_token_ids[i, :, -2:]
 
             unique_sequence_ids = sequence_ids.unique().tolist()
+            unique_sequence_ids.sort()
+
             if MASK_SEQUENCE_ID in unique_sequence_ids:
                 unique_sequence_ids.remove(MASK_SEQUENCE_ID)
             for sequence_id in unique_sequence_ids:
