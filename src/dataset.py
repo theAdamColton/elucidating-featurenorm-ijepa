@@ -1,3 +1,4 @@
+import os
 import math
 import random
 import numpy as np
@@ -44,8 +45,10 @@ def _get_image_dataset(
         empty_check=False,
     )
 
+    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
+
     if shuffle:
-        dataset = dataset.shuffle(shuffle_size_samples)
+        dataset = dataset.shuffle(shuffle_size_samples, rng=shuffle_rng)
 
     dataset = dataset.decode("pil", handler=wds.handlers.warn_and_continue).rename(
         pixel_values=image_column_name
@@ -257,8 +260,10 @@ def get_test_dataset(
     if batch_size is not None:
         dataset = dataset.batched(batch_size)
 
+    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
+
     if shuffle:
-        dataset = dataset.shuffle(shuffle_size_batches)
+        dataset = dataset.shuffle(shuffle_size_batches, rng=shuffle_rng)
 
     return dataset
 
@@ -571,6 +576,8 @@ def get_context_target_dataset(
         "sequence_ids": MASK_SEQUENCE_ID,
     }
 
+    shuffle_rng = random.Random(os.getpid() + random.randint(0, 2**30))
+
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
@@ -622,7 +629,7 @@ def get_context_target_dataset(
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
-        .shuffle(shuffle_size_packer)
+        .shuffle(shuffle_size_packer, rng=shuffle_rng)
         .to_tuple("packed_batch")
         .batched(
             batch_size // packer_batch_size,
