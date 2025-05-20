@@ -40,11 +40,6 @@ class DatasetTests(unittest.TestCase):
 
             resized_pil = einx.rearrange("h w c -> c h w", resized_pil)
 
-            import torchvision
-
-            torchvision.io.write_png(resized_pil, "resized_pil.png")
-            torchvision.io.write_png(resized_pt, "resized_pt.png")
-
             self.assertTrue(
                 torch.allclose(
                     resized_pil / 255, resized_pt / 255, atol=1e-1, rtol=1e-2

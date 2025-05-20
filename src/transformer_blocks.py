@@ -1,3 +1,4 @@
+from typing import Literal
 import einx
 import math
 import torch
@@ -57,12 +58,34 @@ def apply_rotary_emb(
     return x
 
 
+class DynTanh(nn.Module):
+    def __init__(self, hidden_size, elementwise_affine=True):
+        super().__init__()
+
+        self.alpha = nn.Parameter(torch.full((hidden_size,), 0.5))
+
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.gamma = nn.Parameter(torch.ones(hidden_size))
+            self.beta = nn.Parameter(torch.zeros(hidden_size))
+
+    def forward(self, x):
+        x = F.tanh(einx.multiply("... d, d", x, self.alpha))
+        if self.elementwise_affine:
+            x = einx.multiply("... d, d", x, self.gamma)
+            x = einx.add("... d, d", x, self.beta)
+
+        return x
+
+
 @dataclass
 class AttentionConfig:
     embed_dim: int = 64
     head_dim: int = 64
     num_attention_heads: int = 1
     should_use_qk_norm: bool = True
+
+    qk_norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
 
 
 class Attention(nn.Module):
@@ -74,9 +97,19 @@ class Attention(nn.Module):
             config.head_dim * config.num_attention_heads * 3,
             bias=False,
         )
+
+        def get_head_norm():
+            if config.qk_norm_mode == "layernorm":
+                return nn.LayerNorm(config.head_dim)
+            elif config.qk_norm_mode == "dyntanh":
+                return DynTanh(config.head_dim)
+            else:
+                raise ValueError(config.qk_norm_mode)
+
         if config.should_use_qk_norm:
-            self.q_norm = nn.LayerNorm(config.head_dim)
-            self.k_norm = nn.LayerNorm(config.head_dim)
+            self.q_norm = get_head_norm()
+            self.k_norm = get_head_norm()
+
         self.proj_out = nn.Linear(
             config.num_attention_heads * config.head_dim, config.embed_dim, bias=False
         )
@@ -124,6 +157,8 @@ class DiffMoeMLPConfig:
     mlp_ratio: int = 4
     use_bias: bool = True
 
+    norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
+
     num_experts: int = 8
 
     capacity: float = 1.0
@@ -141,7 +176,12 @@ class DiffMoeMLP(nn.Module):
         super().__init__()
         self.config = config
 
-        self.norm = nn.LayerNorm(config.embed_dim)
+        if config.norm_mode == "layernorm":
+            self.norm = nn.LayerNorm(config.embed_dim)
+        elif config.norm_mode == "dyntanh":
+            self.norm = DynTanh(config.embed_dim)
+        else:
+            raise ValueError(config.norm_mode)
 
         self.gate_proj = nn.Linear(config.embed_dim, config.num_experts, bias=False)
 
@@ -268,6 +308,8 @@ class TransformerBlockConfig:
     mlp_config: DiffMoeMLPConfig = field(default_factory=lambda: DiffMoeMLPConfig())
     attention_config: AttentionConfig = field(default_factory=lambda: AttentionConfig())
 
+    norm_mode: Literal["layernorm", "dyntanh", "adanormshift"] = "adanormshift"
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: TransformerBlockConfig):
@@ -276,15 +318,28 @@ class TransformerBlock(nn.Module):
 
         self.embed_dim = config.mlp_config.embed_dim
 
-        self.norm1 = AdaLayerNormShift(self.embed_dim)
+        if config.norm_mode == "layernorm":
+            self.norm1 = nn.LayerNorm(self.embed_dim)
+        elif config.norm_mode == "dyntanh":
+            self.norm1 = DynTanh(self.embed_dim)
+        elif config.norm_mode == "adanormshift":
+            self.norm1 = AdaLayerNormShift(self.embed_dim)
+        else:
+            raise ValueError(config.norm_mode)
+
         self.attention = Attention(self.config.attention_config)
         self.mlp = DiffMoeMLP(self.config.mlp_config)
 
     def forward(self, x, t, block_mask=None, attn_mask=None, rotary_embeds=None):
+        if self.config.norm_mode == "adanormshift":
+            norm_x = self.norm1(x, t)
+        else:
+            norm_x = self.norm1(x)
+
         x = (
             x
             + self.attention(
-                self.norm1(x, t),
+                norm_x,
                 block_mask=block_mask,
                 attn_mask=attn_mask,
                 rotary_embeds=rotary_embeds,

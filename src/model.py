@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import einx
 from dataclasses import dataclass, field
 
-from src.transformer_blocks import TransformerBlock, TransformerBlockConfig
+from src.transformer_blocks import TransformerBlock, TransformerBlockConfig, DynTanh
 from src.dataset import MASK_SEQUENCE_ID
 
 
@@ -153,26 +153,6 @@ class AdaLayerNormShiftScale(nn.Module):
         scale, shift = torch.chunk(emb, 2, dim=-1)
         x = self.norm(x) * (1 + scale)
         x = x + shift
-        return x
-
-
-class DynTanh(nn.Module):
-    def __init__(self, hidden_size, elementwise_affine=True):
-        super().__init__()
-
-        self.alpha = nn.Parameter(torch.full((hidden_size,), 0.5))
-
-        self.elementwise_affine = elementwise_affine
-        if elementwise_affine:
-            self.gamma = nn.Parameter(torch.ones(hidden_size))
-            self.beta = nn.Parameter(torch.zeros(hidden_size))
-
-    def forward(self, x):
-        x = F.tanh(einx.multiply("... d, d", x, self.alpha))
-        if self.elementwise_affine:
-            x = einx.multiply("... d, d", x, self.gamma)
-            x = einx.add("... d, d", x, self.beta)
-
         return x
 
 
@@ -416,6 +396,10 @@ class PredictorConfig:
 
     should_zero_ctx_register_tokens: bool = True
 
+    norm_out_mode: Literal["layernorm", "dyntanh", "adanormshiftscale"] = (
+        "adanormshiftscale"
+    )
+
 
 class Predictor(nn.Module):
     def __init__(self, config=PredictorConfig()):
@@ -464,7 +448,15 @@ class Predictor(nn.Module):
             for _ in range(config.num_transformer_blocks)
         )
 
-        self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
+        if config.norm_out_mode == "layernorm":
+            self.norm_out = nn.LayerNorm(self.hidden_size)
+        elif config.norm_out_mode == "dyntanh":
+            self.norm_out = DynTanh(self.hidden_size)
+        elif config.norm_out_mode == "adanormshiftscale":
+            self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
+        else:
+            raise ValueError(config.norm_out_mode)
+
         self.proj_out = nn.Linear(self.hidden_size, config.input_size)
 
     def forward(
@@ -532,7 +524,11 @@ class Predictor(nn.Module):
         for block in self.blocks:
             x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
-        x = self.norm_out(x, temb)
+        if config.norm_out_mode == "adanormshiftscale":
+            x = self.norm_out(x, temb)
+        else:
+            x = self.norm_out(x)
+
         x = self.proj_out(x)
 
         return x
