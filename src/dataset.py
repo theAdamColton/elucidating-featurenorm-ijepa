@@ -41,6 +41,7 @@ def _get_image_dataset(
         detshuffle=shuffle,
         seed=seed,
         nodesplitter=wds.split_by_node,
+        empty_check=False,
     )
 
     if shuffle:
