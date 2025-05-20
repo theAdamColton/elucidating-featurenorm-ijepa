@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 
+import wandb
 import torchvision
 import torch
 from torch import nn
@@ -95,7 +96,7 @@ def multiscale_gradient_loss(x, y, scales=4):
 
 
 class DPTDepthModel(nn.Module):
-    def __init__(self, input_feature_size=256, non_negative=True):
+    def __init__(self, input_feature_size=256):
         super().__init__()
 
         self.conv1 = nn.Conv2d(
@@ -111,7 +112,6 @@ class DPTDepthModel(nn.Module):
         )
         self.relu = nn.ReLU()
         self.depth_head = nn.Conv2d(32, 1, kernel_size=1, stride=1, padding=0)
-        self.act_out = nn.ReLU() if non_negative else nn.Identity()
 
     def forward(self, x):
         x = self.conv1(x)
@@ -119,10 +119,8 @@ class DPTDepthModel(nn.Module):
         x = self.conv2(x)
         x = self.relu(x)
         x = self.depth_head(x)
-        x = self.act_out(x)
 
-        inv_depth = x
-        return inv_depth
+        return x
 
 
 def _unsqueeze_channels(x):
@@ -152,6 +150,12 @@ def validate_monocular_depth_prediction(
     feature_depth: int = -4,
     num_register_tokens: int = 0,
 ):
+    run = wandb.init(
+        project="ijepa-monocular-depth-eval",
+        mode="disabled" if test_mode else None,
+        reinit="create_new",
+    )
+
     def _get_depth_dataloader(pattern, shuffle=True):
         # To reduce memory usage
         shuffle_size_samples = 256
@@ -226,11 +230,10 @@ def validate_monocular_depth_prediction(
         depth_hat = depth_hat.squeeze(1)
 
         scaled_depth, gt_shift, gt_scale = scale_and_shift_depth(depth)
-        scaled_depth_hat, *_ = scale_and_shift_depth(depth_hat)
 
-        loss_ssi = F.mse_loss(scaled_depth, scaled_depth_hat)
+        loss_ssi = F.mse_loss(scaled_depth, depth_hat)
 
-        loss_reg = multiscale_gradient_loss(scaled_depth, scaled_depth_hat)
+        loss_reg = multiscale_gradient_loss(scaled_depth, depth_hat)
 
         alpha = 0.5
 
@@ -241,7 +244,7 @@ def validate_monocular_depth_prediction(
             # ground truth, to convert the predictions into the units that the ground truth uses.
             # This means that we don't expect the model to predict in the units used by ground truth depth map.
             # Instead, we care about the model focusing on relative differences in depth in the image.
-            depth_hat_gt_space = (scaled_depth_hat * gt_scale) + gt_shift
+            depth_hat_gt_space = (depth_hat * gt_scale) + gt_shift
             rmse_loss = F.mse_loss(depth, depth_hat_gt_space, reduction="none")
             rmse_loss = einx.mean("b [h w]", rmse_loss) ** 0.5
 
@@ -273,9 +276,11 @@ def validate_monocular_depth_prediction(
                 optim.step()
                 optim.zero_grad()
 
-                log_str = " ".join(
-                    [f"{k}:{v.mean().item():.4f}" for k, v in losses.items()]
-                )
+                log_dict = {k: v.mean().item() for k, v in losses.items()}
+
+                run.log(log_dict)
+
+                log_str = " ".join([f"{k}:{v:.4f}" for k, v in log_dict.items()])
                 log_str = f"epoch {epoch} - " + log_str
                 prog_bar.set_description(log_str)
 
@@ -342,4 +347,10 @@ def validate_monocular_depth_prediction(
 
     all_rmse_losses = torch.cat(all_rmse_losses)
     mean_rmse_loss = all_rmse_losses.mean()
-    return dict(mean_rmse_loss=mean_rmse_loss)
+
+    result = dict(mean_rmse_loss=mean_rmse_loss)
+    run.log(result)
+
+    run.finish()
+
+    return result
