@@ -37,7 +37,7 @@ def _get_image_dataset(
 ):
     dataset = wds.WebDataset(
         urls=dataset_pattern,
-        shardshuffle=100 if shuffle else None,
+        shardshuffle=1000 if shuffle else None,
         detshuffle=shuffle,
         seed=seed,
         nodesplitter=wds.split_by_node,
@@ -232,7 +232,7 @@ def get_test_dataset(
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
-    batch_size: int = 256,
+    batch_size: int | None = 256,
     image_size: int = 256,
     patch_size: int = 16,
     num_register_tokens: int = 8,
@@ -252,8 +252,10 @@ def get_test_dataset(
         .map(TokenFlattener())
         .map(RegisterTokenAdder(num_register_tokens))
         .map(SequenceIDAdder())
-        .batched(batch_size)
     )
+
+    if batch_size is not None:
+        dataset = dataset.batched(batch_size)
 
     if shuffle:
         dataset = dataset.shuffle(shuffle_size_batches)

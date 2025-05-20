@@ -5,10 +5,10 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
 import einx
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import webdataset as wds
 
 from src.dataset import TorchImageResizer, get_test_dataset
 from src.model import IJEPADepthSmart
@@ -125,6 +125,14 @@ class DPTDepthModel(nn.Module):
         return inv_depth
 
 
+def _unsqueeze_channels(x):
+    return x.unsqueeze(0)
+
+
+def _squeeze_channels(x):
+    return x.squeeze(0)
+
+
 def validate_monocular_depth_prediction(
     model: IJEPADepthSmart,
     image_column_name: str = "jpg",
@@ -133,7 +141,7 @@ def validate_monocular_depth_prediction(
     validation_image_size: int = 256,
     batch_size: int = 256,
     num_workers: int = 4,
-    train_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..00013}.tar",
+    train_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..00047}.tar",
     val_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar",
     dtype: torch.dtype = torch.bfloat16,
     test_mode: bool = False,
@@ -145,22 +153,34 @@ def validate_monocular_depth_prediction(
     num_register_tokens: int = 0,
 ):
     def _get_depth_dataloader(pattern, shuffle=True):
+        # To reduce memory usage
+        shuffle_size_samples = 256
         ds = (
             get_test_dataset(
                 pattern,
                 shuffle=shuffle,
+                shuffle_size_samples=shuffle_size_samples,
                 image_column_name=image_column_name,
-                batch_size=batch_size,
+                # Don't batch in the workers
+                batch_size=None,
                 image_size=validation_image_size,
                 patch_size=patch_size,
                 num_register_tokens=num_register_tokens,
+                shuffle_size_batches=1,
             )
             .rename(depth=depth_column_name)
             .map_dict(depth=torch.from_numpy)
+            .map_dict(depth=_unsqueeze_channels)
             .map_dict(depth=TorchImageResizer(validation_image_size))
+            .map_dict(depth=_squeeze_channels)
             .to_tuple("pixel_values", "token_ids", "depth")
         )
-        dl = DataLoader(ds, num_workers=num_workers, batch_size=None)
+        dl = (
+            wds.WebLoader(ds, num_workers=num_workers, batch_size=None)
+            .shuffle(2000)
+            # Batch only after shuffling
+            .batched(batch_size)
+        )
         return dl
 
     encoder = model.ema_encoder

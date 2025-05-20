@@ -103,7 +103,7 @@ class MainConfig:
 
     # Webdataset tars
     monocular_depth_train_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..13}.tar"
+        "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..47}.tar"
     )
     monocular_depth_val_dataset_pattern: str = (
         "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
