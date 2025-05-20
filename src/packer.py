@@ -127,12 +127,13 @@ class PairPacker:
             x_tensor = x.named_columns[name]
             x_start_idx = buffer_size_x
             buffer[x_start_idx : x_start_idx + x_sequence_length] = x_tensor
-            self.batch_buffer_size_x[i] += x_sequence_length
 
             y_tensor = y.named_columns[name]
             y_start_idx = self.pack_size_x + buffer_size_y
             buffer[y_start_idx : y_start_idx + y_sequence_length] = y_tensor
-            self.batch_buffer_size_y[i] += y_sequence_length
+
+        self.batch_buffer_size_x[i] += x_sequence_length
+        self.batch_buffer_size_y[i] += y_sequence_length
 
     def append(
         self, x: ts.TensorSet, y: ts.TensorSet, id: int, metadata: dict = dict()
