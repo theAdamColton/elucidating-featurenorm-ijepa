@@ -69,6 +69,10 @@ class MainConfig:
     validate_every_num_epochs: int = 10
     max_num_save_checkpoints: int = 2
 
+    context_target_max_side_length: int = 256
+    context_target_min_side_length: int = 64
+    context_target_mask_window_size: int = 2
+
     validation_probe_lr: float = 1e-3
     validation_monocular_depth_lr: float = 5e-4
     validation_image_size: int = 256
@@ -156,6 +160,9 @@ def main(conf: MainConfig = MainConfig()):
             label_column_name=conf.label_column_name,
             batch_size=conf.batch_size,
             packer_batch_size=conf.packer_batch_size,
+            max_side_length=conf.context_target_max_side_length,
+            min_side_length=conf.context_target_min_side_length,
+            mask_window_size=conf.context_target_mask_window_size,
             num_register_tokens=conf.num_register_tokens,
             patch_size=patch_size,
             min_context_capacity=conf.min_context_capacity,
