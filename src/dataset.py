@@ -503,6 +503,8 @@ def _packed_x_y(
         x_patches, y_patches = sample.pop("x_patches"), sample.pop("y_patches")
         _addin_sample_ids(x_patches, id)
         _addin_sample_ids(y_patches, id)
+
+        # Yields once or zero times
         for packed_batch, packed_metadata in packer.append(
             x_patches, y_patches, id, sample
         ):

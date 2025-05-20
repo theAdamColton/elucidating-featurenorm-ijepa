@@ -753,6 +753,10 @@ def main(conf: MainConfig = MainConfig()):
                                 ids.remove(MASK_SEQUENCE_ID)
                             num_samples += len(ids)
 
+                        mask_rate = (
+                            (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
+                        )
+
                         wandb.log(
                             dict(
                                 epoch=epoch,
@@ -761,6 +765,7 @@ def main(conf: MainConfig = MainConfig()):
                                 lr=lr,
                                 ema_beta=ema_beta,
                                 smooth_rank=result_dict["smooth_rank"],
+                                mask_rate=mask_rate,
                                 interp=interp,
                             ),
                             step=training_state["global_step"],

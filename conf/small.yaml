@@ -36,10 +36,13 @@ conf:
         mlp_config:
           embed_dim: 256
           num_experts: 8
+          norm_mode: dyntanh
         attention_config:
           embed_dim: 256
           head_dim: 64
           num_attention_heads: 4
+          qk_norm_mode: dyntanh
+        norm_mode: dyntanh
       norm_out_mode: dyntanh
     predictor_batch_repeat: 4
     depthsmart_mode: disabled
