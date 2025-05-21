@@ -782,7 +782,7 @@ def main(conf: MainConfig = MainConfig()):
 
             prog_bar.update(1)
             prog_bar.set_description(
-                f"training_state {training_state} loss {loss.item().round(4)}"
+                f"training_state {training_state} loss {round(loss.item(),4)}"
             )
 
         def train_one_epoch():
