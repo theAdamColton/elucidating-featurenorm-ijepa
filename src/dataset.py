@@ -12,19 +12,43 @@ from src.packer import PairPacker
 MASK_SEQUENCE_ID = -100
 
 
-def tensorset_collation_fn(samples, combine_tensors=True, combine_scalars=True):
-    batched = list(zip(*samples))
-    result = []
-    for b in batched:
-        if isinstance(b[0], ts.TensorSet):
-            b = ts.cat(b, 0)
-        elif isinstance(b[0], list):
-            # list summation
-            b = [x for y in b for x in y]
-        else:
-            b = list(b)
-        result.append(b)
-    return result
+def get_tensorset_collation_fn(mode="cat"):
+    def tensorset_collation_fn(samples, combine_tensors=True, combine_scalars=True):
+        batched = list(zip(*samples))
+        result = []
+        for b in batched:
+            if isinstance(b[0], ts.TensorSet):
+                if mode == "cat":
+                    b = ts.cat(b, 0)
+                elif mode == "stack":
+                    b = ts.stack(b, 0)
+                else:
+                    raise ValueError(mode)
+            elif isinstance(b[0], list):
+                # list summation
+                b = [x for y in b for x in y]
+            else:
+                b = list(b)
+            result.append(b)
+        return result
+
+    return tensorset_collation_fn
+
+
+def _unbatched_tensorset(data):
+    for sample in data:
+        assert isinstance(sample, (tuple, list))
+
+        for x in sample:
+            assert isinstance(x, ts.TensorSet)
+
+        b = sample[0].size(0)
+
+        for i in range(b):
+            yield tuple(x.iloc[i] for x in sample)
+
+
+unbatched_tensorset = wds.pipelinefilter(_unbatched_tensorset)
 
 
 def _get_image_dataset(
@@ -48,7 +72,7 @@ def _get_image_dataset(
         empty_check=False,
     )
 
-    shuffle_rng = random.Random(seed)
+    shuffle_rng = random.Random(rng.randbytes(16))
 
     if shuffle:
         dataset = dataset.shuffle(shuffle_size_samples, rng=shuffle_rng)
@@ -192,8 +216,11 @@ class RegisterTokenAdder:
         s, d = x.shape
         s, nd = position_ids.shape
 
-        padding = torch.zeros(num_register_tokens, d, dtype=x.dtype, device=x.device)
-        x = torch.cat((padding, x))
+        if num_register_tokens > 0:
+            padding = torch.zeros(
+                num_register_tokens, d, dtype=x.dtype, device=x.device
+            )
+            x = torch.cat((padding, x))
 
         padding = torch.zeros(
             num_register_tokens,
@@ -204,9 +231,13 @@ class RegisterTokenAdder:
         position_ids = torch.cat((padding, position_ids))
 
         register_ids = torch.full((num_register_tokens + s,), MASK_SEQUENCE_ID)
-        register_ids[:num_register_tokens] = torch.arange(
-            num_register_tokens, dtype=position_ids.dtype, device=position_ids.device
-        )
+
+        if num_register_tokens > 0:
+            register_ids[:num_register_tokens] = torch.arange(
+                num_register_tokens,
+                dtype=position_ids.dtype,
+                device=position_ids.device,
+            )
 
         token_ids = torch.cat((register_ids.unsqueeze(-1), position_ids), 1)
 
@@ -537,7 +568,7 @@ def get_context_target_dataset(
     label_column_name: str | None = None,
     batch_size: int = 256,
     packer_batch_size: int = 16,
-    shuffle_size_packer: int = 16,
+    shuffle_size_packer: int = 1000,
     max_side_length: int = 256,
     min_side_length: int = 64,
     patch_size: int = 16,
@@ -546,6 +577,7 @@ def get_context_target_dataset(
     min_context_capacity: float = 0.05,
     max_context_capacity: float = 0.95,
     absolute_max_context_capacity: float = 0.5,
+    num_workers: int = 0,
 ):
     """
     Loads a webdataset containing image files,
@@ -645,6 +677,7 @@ def get_context_target_dataset(
             )
         )
         .map(PatchesToTensorSet())
+        .rename(x_patches="x_patches", y_patches="y_patches", keep=False)
         .compose(
             packed_x_y(
                 packer_context_sequence_length,
@@ -653,13 +686,22 @@ def get_context_target_dataset(
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
-        .shuffle(shuffle_size_packer, rng=random.Random(rng.randbytes(16)))
         .to_tuple("packed_batch")
         .batched(
             batch_size // packer_batch_size,
-            collation_fn=tensorset_collation_fn,
+            collation_fn=get_tensorset_collation_fn("cat"),
+        )
+    )
+
+    dataloader = (
+        wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
+        .compose(unbatched_tensorset())
+        .shuffle(shuffle_size_packer, rng=random.Random(rng.randbytes(16)))
+        .batched(
+            batch_size,
+            collation_fn=get_tensorset_collation_fn("stack"),
             partial=False,
         )
     )
 
-    return dataset, packer_context_sequence_length, max_y_sequence_length
+    return dataloader, packer_context_sequence_length, max_y_sequence_length

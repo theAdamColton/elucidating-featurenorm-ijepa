@@ -478,6 +478,7 @@ dependencies = [
     { name = "jsonargparse", extra = ["signatures"] },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "pillow-simd" },
     { name = "tensorset" },
     { name = "torch" },
     { name = "torch-pca" },
@@ -499,6 +500,7 @@ requires-dist = [
     { name = "jsonargparse", extras = ["signatures"], specifier = ">=4.38.0" },
     { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "numpy", specifier = ">=2.2.5" },
+    { name = "pillow-simd", specifier = ">=9.5.0.post2" },
     { name = "tensorset", specifier = ">=0.4.2" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "torch-pca", specifier = ">=1.1.0" },
@@ -1011,6 +1013,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a5/ac/77525347cb43b83ae905ffe257bbe2cc6fd23acb9796639a1f56aa59d191/pillow-11.2.1-cp313-cp313t-win_amd64.whl", hash = "sha256:36d6b82164c39ce5482f649b437382c0fb2395eabc1e2b1702a6deb8ad647d6e", size = 2681895 },
     { url = "https://files.pythonhosted.org/packages/67/32/32dc030cfa91ca0fc52baebbba2e009bb001122a1daa8b6a79ad830b38d3/pillow-11.2.1-cp313-cp313t-win_arm64.whl", hash = "sha256:225c832a13326e34f212d2072982bb1adb210e0cc0b153e688743018c94a2681", size = 2417234 },
 ]
+
+[[package]]
+name = "pillow-simd"
+version = "9.5.0.post2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/d9/5cf8d7c9ecaf389fe62570a5287036611f1328796ed6e59abbc2dc09f4a6/Pillow-SIMD-9.5.0.post2.tar.gz", hash = "sha256:39dfb027bdaa3e35597df9a1c42ea97091f32bc83f25ab9cab0845b3c4bad331", size = 904623 }
 
 [[package]]
 name = "platformdirs"

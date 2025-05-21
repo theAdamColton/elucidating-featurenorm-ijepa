@@ -3,7 +3,7 @@ conf:
   dtype: bfloat16
   device: cuda
   batch_size: 256
-  num_workers: 6
+  num_workers: 0
   ema_beta_start: 0.85
   ema_beta: 0.996
   ema_beta_warmup_steps: 500

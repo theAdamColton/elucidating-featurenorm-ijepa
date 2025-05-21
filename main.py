@@ -11,7 +11,6 @@ from tqdm import tqdm
 import numpy as np
 import einx
 import jsonargparse
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision
 import torch
@@ -152,7 +151,7 @@ def main(conf: MainConfig = MainConfig()):
 
     patch_size = conf.patch_size
 
-    dataset, context_sequence_length, target_sequence_length = (
+    dataloader, context_sequence_length, target_sequence_length = (
         get_context_target_dataset(
             dataset_pattern=conf.train_dataset_pattern,
             seed=conf.seed,
@@ -168,9 +167,9 @@ def main(conf: MainConfig = MainConfig()):
             min_context_capacity=conf.min_context_capacity,
             max_context_capacity=conf.max_context_capacity,
             absolute_max_context_capacity=conf.absolute_max_context_capacity,
+            num_workers=conf.num_workers,
         )
     )
-    dataloader = DataLoader(dataset, num_workers=conf.num_workers, batch_size=None)
 
     training_state = dict(global_step=0, epoch=0)
 
