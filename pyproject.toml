@@ -11,6 +11,7 @@ dependencies = [
     "matplotlib>=3.10.1",
     "numpy>=2.2.5",
     "pillow-simd>=9.5.0.post2",
+    "pyvips>=3.0.0",
     "tensorset>=0.4.2",
     "torch>=2.7.0",
     "torch-pca>=1.1.0",

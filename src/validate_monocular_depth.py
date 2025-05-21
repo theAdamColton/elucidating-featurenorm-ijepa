@@ -9,9 +9,8 @@ from torch.optim import AdamW
 import einx
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import webdataset as wds
 
-from src.dataset import TorchImageResizer, get_test_dataset
+from src.dataset import get_test_dataloader, TorchImageResizer
 from src.model import IJEPADepthSmart
 from src.utils import get_viz_output_path
 
@@ -160,8 +159,8 @@ def validate_monocular_depth_prediction(
     def _get_depth_dataloader(pattern, shuffle=True):
         # To reduce memory usage
         shuffle_size_samples = 256
-        ds = (
-            get_test_dataset(
+        dl = (
+            get_test_dataloader(
                 pattern,
                 shuffle=shuffle,
                 shuffle_size_samples=shuffle_size_samples,
@@ -170,16 +169,15 @@ def validate_monocular_depth_prediction(
                 image_size=validation_image_size,
                 patch_size=patch_size,
                 num_register_tokens=num_register_tokens,
-                shuffle_size_batches=16,
+                num_workers=num_workers,
             )
             .rename(depth=depth_column_name)
-            .map_dict(depth=torch.from_numpy)
+            # .map_dict(depth=torch.from_numpy)
             .map_dict(depth=_unsqueeze_channels)
             .map_dict(depth=TorchImageResizer(validation_image_size))
             .map_dict(depth=_squeeze_channels)
             .to_tuple("pixel_values", "token_ids", "depth")
         )
-        dl = wds.WebLoader(ds, num_workers=num_workers, batch_size=None)
         return dl
 
     encoder = model.ema_encoder

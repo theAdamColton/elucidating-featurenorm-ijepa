@@ -54,28 +54,33 @@ unbatched_tensorset = wds.pipelinefilter(_unbatched_tensorset)
 def _get_image_dataset(
     dataset_pattern: str = "",
     shuffle=True,
-    seed: int = 42,
+    seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
 ):
-    rng = random.Random(seed)
-
-    shard_shuffle_seed = rng.randint(0, 2**30)
+    # Setup rng
+    # Prefer not to use seeding
+    shard_shuffle_seed = None
+    shuffle_rng = None
+    if seed is not None:
+        rng = random.Random(seed)
+        shard_shuffle_seed = rng.randint(0, 2**30)
+        shuffle_rng = random.Random(rng.randbytes(16))
 
     dataset = wds.WebDataset(
         urls=dataset_pattern,
         shardshuffle=1000 if shuffle else None,
-        detshuffle=True,
+        detshuffle=seed is not None,
         seed=shard_shuffle_seed,
         nodesplitter=wds.split_by_node,
         empty_check=False,
     )
 
-    shuffle_rng = random.Random(rng.randbytes(16))
-
     if shuffle:
-        dataset = dataset.shuffle(shuffle_size_samples, rng=shuffle_rng)
+        dataset = dataset.shuffle(
+            size=shuffle_size_samples, initial=shuffle_size_samples, rng=shuffle_rng
+        )
 
     dataset = dataset.decode("pil", handler=wds.handlers.warn_and_continue).rename(
         pixel_values=image_column_name
@@ -262,10 +267,10 @@ class SequenceIDAdder:
         return row
 
 
-def get_test_dataset(
+def get_test_dataloader(
     dataset_pattern: str = "",
     shuffle: bool = True,
-    seed: int = 42,
+    seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
@@ -273,7 +278,7 @@ def get_test_dataset(
     image_size: int = 256,
     patch_size: int = 16,
     num_register_tokens: int = 8,
-    shuffle_size_batches: int = 16,
+    num_workers: int = 0,
 ):
     dataset = (
         _get_image_dataset(
@@ -294,12 +299,20 @@ def get_test_dataset(
     if batch_size is not None:
         dataset = dataset.batched(batch_size)
 
-    shuffle_rng = random.Random(seed)
+    shuffle_rng = None
+    if seed is not None:
+        shuffle_rng = random.Random(seed)
 
-    if shuffle:
-        dataset = dataset.shuffle(shuffle_size_batches, rng=shuffle_rng)
+    dataloader = (
+        wds.WebLoader(dataset, num_workers=num_workers, batch_size=None)
+        .unbatched()
+        .shuffle(
+            size=shuffle_size_samples, initial=shuffle_size_samples, rng=shuffle_rng
+        )
+        .batched(batch_size)
+    )
 
-    return dataset
+    return dataloader
 
 
 class ImageSizeFilter:
@@ -560,15 +573,14 @@ class PatchesToTensorSet:
         return row
 
 
-def get_context_target_dataset(
+def get_context_target_dataloader(
     dataset_pattern: str = "",
-    seed: int = 42,
-    shuffle_size_samples: int = 1000,
+    seed: int | None = None,
+    shuffle_size_samples: int = 2000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
     batch_size: int = 256,
-    packer_batch_size: int = 16,
-    shuffle_size_packer: int = 1000,
+    packer_batch_size: int = 64,
     max_side_length: int = 256,
     min_side_length: int = 64,
     patch_size: int = 16,
@@ -584,11 +596,6 @@ def get_context_target_dataset(
     Randomly resizes, patches, and splits patches into context and target.
     Then packs context-target pairs, returning packed batches
     """
-
-    # TODO, the rng is the same for all workers
-    # The shards will be shuffled properly across all workers,
-    # but might effect random context/target or resizing
-    rng = random.Random(seed)
 
     resize_multiple_of = patch_size * mask_window_size
 
@@ -632,11 +639,26 @@ def get_context_target_dataset(
         "sequence_ids": MASK_SEQUENCE_ID,
     }
 
+    if seed is not None:
+        print(
+            "Warning! Seeding should only be used for testing purposes and not for pretraining!"
+        )
+        rng = random.Random()
+        rng.seed(seed)
+        resizer_rng = random.Random(rng.randbytes(16))
+        splitter_rng = random.Random(rng.randbytes(16))
+        shuffle_rng = random.Random(rng.randbytes(16))
+    else:
+        rng = None
+        resizer_rng = None
+        splitter_rng = None
+        shuffle_rng = None
+
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
             shuffle=True,
-            seed=rng.randint(0, 2**30),
+            seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
             label_column_name=label_column_name,
@@ -648,7 +670,7 @@ def get_context_target_dataset(
                 min_side_length=min_side_length,
                 multiple_of=resize_multiple_of,
                 max_num_pixels=max_num_pixels,
-                rng=random.Random(rng.randbytes(16)),
+                rng=resizer_rng,
             )
         )
         .map(ImagePatcher(patch_size))
@@ -658,7 +680,7 @@ def get_context_target_dataset(
                 min_context_capacity=min_context_capacity,
                 max_context_capacity=max_context_capacity,
                 max_context_sequence_length=max_context_sequence_length,
-                rng=random.Random(rng.randbytes(16)),
+                rng=splitter_rng,
             )
         )
         # Add register tokens only to the context
@@ -678,6 +700,7 @@ def get_context_target_dataset(
         )
         .map(PatchesToTensorSet())
         .rename(x_patches="x_patches", y_patches="y_patches", keep=False)
+        # Pack samples on the main process
         .compose(
             packed_x_y(
                 packer_context_sequence_length,
@@ -687,20 +710,21 @@ def get_context_target_dataset(
             )
         )
         .to_tuple("packed_batch")
-        .batched(
-            batch_size // packer_batch_size,
-            collation_fn=get_tensorset_collation_fn("cat"),
-        )
     )
+
+    shuffle_size_micro_batches = max(shuffle_size_samples // packer_batch_size, 16)
 
     dataloader = (
         wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
-        .compose(unbatched_tensorset())
-        .shuffle(shuffle_size_packer, rng=random.Random(rng.randbytes(16)))
+        # Shuffle micro batches between worker shards
+        .shuffle(
+            size=shuffle_size_micro_batches,
+            initial=shuffle_size_micro_batches,
+            rng=shuffle_rng,
+        )
         .batched(
-            batch_size,
-            collation_fn=get_tensorset_collation_fn("stack"),
-            partial=False,
+            batch_size // packer_batch_size,
+            collation_fn=get_tensorset_collation_fn("cat"),
         )
     )
 

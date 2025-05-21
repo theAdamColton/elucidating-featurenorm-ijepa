@@ -479,6 +479,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pillow-simd" },
+    { name = "pyvips" },
     { name = "tensorset" },
     { name = "torch" },
     { name = "torch-pca" },
@@ -501,6 +502,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "numpy", specifier = ">=2.2.5" },
     { name = "pillow-simd", specifier = ">=9.5.0.post2" },
+    { name = "pyvips", specifier = ">=3.0.0" },
     { name = "tensorset", specifier = ">=0.4.2" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "torch-pca", specifier = ">=1.1.0" },
@@ -1187,6 +1189,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/f8/bf/abbd3cdfb8fbc7fb3
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/c4/34e93fe5f5429d7570ec1fa436f1986fb1f00c3e0f43a589fe2bbcd22c3f/pytz-2025.2-py2.py3-none-any.whl", hash = "sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00", size = 509225 },
 ]
+
+[[package]]
+name = "pyvips"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4c/a2/d8ecd2f7ffa084870ba071a584aac44800a89f3c77b305999be7dc8b7bb3/pyvips-3.0.0.tar.gz", hash = "sha256:79459975e4a16089b0eaafed26eb1400ae66ebc16d3ff3a7d2241abcf19dc9e8", size = 56806 }
 
 [[package]]
 name = "pyxdg"

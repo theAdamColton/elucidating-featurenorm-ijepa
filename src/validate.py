@@ -1,20 +1,18 @@
-import random
 from typing import Literal
 from glob import glob
 import uuid
 import tempfile
+from contextlib import contextmanager
+
 import torch
 import einx
-from contextlib import contextmanager
 import webdataset as wds
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torch import nn
 import torch.nn.functional as F
-
 import tensorset as ts
 
-from src.dataset import get_test_dataset
+from src.dataset import get_test_dataloader
 from src.model import IJEPADepthSmart
 
 
@@ -107,7 +105,7 @@ def validate(
         with torch.autocast(device.type, dtype):
             yield
 
-    val_train_dataset = get_test_dataset(
+    val_train_dataloader = get_test_dataloader(
         dataset_pattern=train_dataset_pattern,
         shuffle=True,
         image_column_name=image_column_name,
@@ -116,8 +114,9 @@ def validate(
         image_size=validation_image_size,
         num_register_tokens=num_register_tokens,
         patch_size=patch_size,
+        num_workers=num_workers,
     )
-    val_test_dataset = get_test_dataset(
+    val_test_dataloader = get_test_dataloader(
         dataset_pattern=val_dataset_pattern,
         shuffle=False,
         image_column_name=image_column_name,
@@ -126,13 +125,12 @@ def validate(
         image_size=validation_image_size,
         num_register_tokens=num_register_tokens,
         patch_size=patch_size,
+        num_workers=num_workers,
     )
 
     with tempfile.TemporaryDirectory(dir=".") as tmpdir:
 
-        def _embed_dataset(ds, prefix="train-"):
-            dl = DataLoader(ds, num_workers=num_workers, batch_size=None)
-
+        def _embed_dataset(dl, prefix="train-"):
             with wds.ShardWriter(f"{tmpdir}/{prefix}%04d.tar") as writer:
                 pass
 
@@ -222,8 +220,8 @@ def validate(
                 urls = list(glob(f"{tmpdir}/{prefix}*.tar"))
                 return urls
 
-        train_tar_urls = _embed_dataset(val_train_dataset, "train-")
-        test_tar_urls = _embed_dataset(val_test_dataset, "test-")
+        train_tar_urls = _embed_dataset(val_train_dataloader, "train-")
+        test_tar_urls = _embed_dataset(val_test_dataloader, "test-")
 
         classifier = MultiDepthClassifier(
             1 if validation_depthsmart_mode == "lastlayer" else num_feature_depth,
@@ -239,15 +237,16 @@ def validate(
         if should_compile:
             classifier = torch.compile(classifier)
 
+        minibatch_shuffle_size = 16
+        sample_shuffle_size = 1000
+
         train_dataset = (
             wds.WebDataset(
                 train_tar_urls,
                 empty_check=False,
                 shardshuffle=100,
-                detshuffle=True,
-                seed=random.randint(0, 2**30),
             )
-            .shuffle(16)
+            .shuffle(size=minibatch_shuffle_size, initial=minibatch_shuffle_size)
             .decode()
             .to_tuple("features.npy", "label.npy")
             .compose(batch_embeddings(validation_probe_batch_size))
@@ -259,7 +258,7 @@ def validate(
                 batch_size=None,
             )
             .unbatched()
-            .shuffle(1000)
+            .shuffle(size=sample_shuffle_size, initial=sample_shuffle_size)
             .batched(validation_probe_batch_size)
         )
 
@@ -290,7 +289,7 @@ def validate(
             .to_tuple("features.npy", "label.npy")
             .compose(batch_embeddings(validation_probe_batch_size))
         )
-        test_dataloader = DataLoader(
+        test_dataloader = wds.WebLoader(
             test_dataset, num_workers=num_workers, batch_size=None
         )
 

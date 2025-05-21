@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import wandb
 import tensorset as ts
 
-from src.dataset import get_context_target_dataset, MASK_SEQUENCE_ID
+from src.dataset import get_context_target_dataloader, MASK_SEQUENCE_ID
 from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
@@ -54,9 +54,9 @@ class MainConfig:
     dtype: str = "bfloat16"
     device: str = "cuda"
     batch_size: int = 256
-    packer_batch_size: int = 16
+    packer_batch_size: int = 64
     num_workers: int = 0
-    seed: int = 420
+    seed: int | None = None
     num_warmup_steps: int = 5000
     start_lr: float = 1e-4
     lr: float = 5e-4
@@ -139,9 +139,10 @@ class MainConfig:
 
 
 def main(conf: MainConfig = MainConfig()):
-    random.seed(conf.seed)
-    torch.manual_seed(conf.seed)
-    np.random.seed(conf.seed)
+    if conf.seed is not None:
+        random.seed(conf.seed)
+        torch.manual_seed(conf.seed)
+        np.random.seed(conf.seed)
 
     device = torch.device(conf.device)
     dtype = getattr(torch, conf.dtype)
@@ -152,7 +153,7 @@ def main(conf: MainConfig = MainConfig()):
     patch_size = conf.patch_size
 
     dataloader, context_sequence_length, target_sequence_length = (
-        get_context_target_dataset(
+        get_context_target_dataloader(
             dataset_pattern=conf.train_dataset_pattern,
             seed=conf.seed,
             image_column_name=conf.image_column_name,
