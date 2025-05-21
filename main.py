@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import random
 
+from tqdm import tqdm
 import numpy as np
 import einx
 import jsonargparse
@@ -694,6 +695,8 @@ def main(conf: MainConfig = MainConfig()):
             with open(yaml_save_path, "w") as f:
                 yaml.dump(conf_dict, f)
 
+        prog_bar = tqdm(desc="training")
+
         def train_step(batch):
             patches, token_ids = prepare_context_target_batch(batch, device, dtype)
 
@@ -776,6 +779,11 @@ def main(conf: MainConfig = MainConfig()):
                 )
 
             training_state["global_step"] += 1
+
+            prog_bar.update(1)
+            prog_bar.set_description(
+                f"training_state {training_state} loss {loss.item().round(4)}"
+            )
 
         def train_one_epoch():
             for batch in dataloader:
@@ -863,6 +871,8 @@ def main(conf: MainConfig = MainConfig()):
             save()
 
         save()
+
+        prog_bar.close()
 
 
 if __name__ == "__main__":
