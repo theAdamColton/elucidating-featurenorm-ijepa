@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 import random
 
-from tqdm import tqdm
 import numpy as np
 import einx
 import jsonargparse
@@ -177,7 +176,7 @@ def main(conf: MainConfig = MainConfig()):
         )
     )
 
-    training_state = dict(global_step=0, epoch=0)
+    training_state = dict(global_step=0, epoch=0, num_total_samples=0)
 
     model = IJEPADepthSmart(conf.model).to(device)
     trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
@@ -695,99 +694,115 @@ def main(conf: MainConfig = MainConfig()):
             with open(yaml_save_path, "w") as f:
                 yaml.dump(conf_dict, f)
 
-        for epoch in range(training_state["epoch"], conf.num_epochs):
+        def train_step(batch):
+            patches, token_ids = prepare_context_target_batch(batch, device, dtype)
 
-            def train_step(batch):
-                patches, token_ids = prepare_context_target_batch(batch, device, dtype)
-
-                interp = 0
-                if conf.should_interp:
-                    interp = min(
-                        1, training_state["global_step"] / conf.interp_warmup_steps
-                    )
-
-                ema_beta = (
-                    min(
-                        1,
-                        training_state["global_step"] / conf.ema_beta_warmup_steps,
-                    )
-                    * (conf.ema_beta - conf.ema_beta_start)
-                    + conf.ema_beta_start
+            interp = 0
+            if conf.should_interp:
+                interp = min(
+                    1, training_state["global_step"] / conf.interp_warmup_steps
                 )
 
-                should_log = (
-                    training_state["global_step"] % conf.log_every_num_steps
-                ) == 0
+            ema_beta = (
+                min(
+                    1,
+                    training_state["global_step"] / conf.ema_beta_warmup_steps,
+                )
+                * (conf.ema_beta - conf.ema_beta_start)
+                + conf.ema_beta_start
+            )
 
-                with autocast_fn():
-                    result_dict = model(
-                        patches=patches,
-                        token_ids=token_ids,
-                        context_sequence_length=context_sequence_length,
+            should_log = (training_state["global_step"] % conf.log_every_num_steps) == 0
+
+            with autocast_fn():
+                result_dict = model(
+                    patches=patches,
+                    token_ids=token_ids,
+                    context_sequence_length=context_sequence_length,
+                    interp=interp,
+                    return_smooth_rank=should_log,
+                )
+
+            loss = result_dict["loss"]
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            lr = (min(1, training_state["global_step"] / conf.num_warmup_steps)) * (
+                conf.lr - conf.start_lr
+            ) + conf.start_lr
+            for g in optimizer.param_groups:
+                g["lr"] = lr
+
+            for ema_p, p in zip(
+                model.ema_encoder.parameters(), model.encoder.parameters()
+            ):
+                if p.is_floating_point():
+                    ema_p.lerp_(p, 1 - ema_beta)
+                else:
+                    ema_p.copy_(p)
+
+            if should_log:
+                num_samples_in_batch = 0
+                for ids_seq in token_ids[..., 0].cpu():
+                    ids = torch.unique(ids_seq).tolist()
+                    if MASK_SEQUENCE_ID in ids:
+                        ids.remove(MASK_SEQUENCE_ID)
+                    num_samples_in_batch += len(ids)
+
+                # An estimate of the number of samples processed since the last log
+                estimated_processed_samples = num_samples_in_batch
+                if training_state["global_step"] > 0:
+                    estimated_processed_samples *= conf.log_every_num_steps
+
+                training_state["num_total_samples"] += estimated_processed_samples
+
+                mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
+
+                wandb.log(
+                    dict(
+                        epoch=training_state["epoch"],
+                        loss=loss.item(),
+                        num_samples=num_samples_in_batch,
+                        lr=lr,
+                        ema_beta=ema_beta,
+                        smooth_rank=result_dict["smooth_rank"].item(),
+                        mask_rate=mask_rate,
                         interp=interp,
-                        return_smooth_rank=should_log,
-                    )
+                        num_total_samples=estimated_processed_samples,
+                    ),
+                    step=training_state["global_step"],
+                )
 
-                loss = result_dict["loss"]
+            training_state["global_step"] += 1
 
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
+        def train_one_epoch():
+            for batch in dataloader:
+                train_step(batch)
 
-                lr = (min(1, training_state["global_step"] / conf.num_warmup_steps)) * (
-                    conf.lr - conf.start_lr
-                ) + conf.start_lr
-                for g in optimizer.param_groups:
-                    g["lr"] = lr
+                estimated_epoch = (
+                    training_state["num_total_samples"] // conf.train_dataset_length
+                )
 
-                for ema_p, p in zip(
-                    model.ema_encoder.parameters(), model.encoder.parameters()
-                ):
-                    if p.is_floating_point():
-                        ema_p.lerp_(p, 1 - ema_beta)
-                    else:
-                        ema_p.copy_(p)
+                if estimated_epoch > training_state["epoch"]:
+                    training_state["epoch"] += 1
+                    return
 
-                if should_log:
-                    num_samples = 0
-                    for ids_seq in token_ids[..., 0].cpu():
-                        ids = torch.unique(ids_seq).tolist()
-                        if MASK_SEQUENCE_ID in ids:
-                            ids.remove(MASK_SEQUENCE_ID)
-                        num_samples += len(ids)
+                if conf.test_mode:
+                    return
 
-                    mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
+        for _ in range(conf.num_epochs):
+            train_one_epoch()
 
-                    wandb.log(
-                        dict(
-                            epoch=epoch,
-                            loss=loss.item(),
-                            num_samples=num_samples,
-                            lr=lr,
-                            ema_beta=ema_beta,
-                            smooth_rank=result_dict["smooth_rank"].item(),
-                            mask_rate=mask_rate,
-                            interp=interp,
-                        ),
-                        step=training_state["global_step"],
-                    )
-
-                training_state["global_step"] += 1
-
-            def train_epoch():
-                for batch in tqdm(dataloader, desc=f"training epoch {epoch}"):
-                    train_step(batch)
-
-                    if conf.test_mode:
-                        break
-
-            train_epoch()
-
-            is_last_epoch = epoch == conf.num_epochs - 1
+            is_last_epoch = training_state["epoch"] == conf.num_epochs - 1
             should_validate = (
                 conf.test_mode
                 or is_last_epoch
-                or ((epoch > 0) and (epoch % conf.validate_every_num_epochs == 0))
+                or (
+                    (training_state["epoch"] > 0)
+                    and (training_state["epoch"] % conf.validate_every_num_epochs == 0)
+                )
             )
 
             if should_validate:
@@ -824,7 +839,7 @@ def main(conf: MainConfig = MainConfig()):
                 line_series = wandb.plot.line_series(
                     xs=depths,
                     ys=[accuracies],
-                    keys=[f"Epoch {epoch:03}"],
+                    keys=[f"Epoch {training_state['epoch']:03}"],
                     title="Feature Depth VS Accuracy@1",
                     xname="Depth",
                 )
@@ -832,13 +847,13 @@ def main(conf: MainConfig = MainConfig()):
                 wandb.log(
                     {
                         "depth vs acc@1": line_series,
-                        "epoch": epoch,
+                        "epoch": training_state["epoch"],
                         "acc@1": best_accuracy,
                     },
                     step=training_state["global_step"],
                 )
 
-                print("EPOCH", epoch, "accuracies", accuracies)
+                print("EPOCH", training_state["epoch"], "accuracies", accuracies)
 
             training_state["epoch"] += 1
 
