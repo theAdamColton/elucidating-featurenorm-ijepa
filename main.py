@@ -781,12 +781,13 @@ def main(conf: MainConfig = MainConfig()):
             training_state["global_step"] += 1
 
             prog_bar.update(1)
-            prog_bar.set_description(
-                f"training_state {training_state} loss {round(loss.item(),4)}"
-            )
+            prog_bar.set_description(f"{training_state} loss {round(loss.item(),3)}")
+
+        dataloader_stream = iter(dataloader)
 
         def train_one_epoch():
-            for batch in dataloader:
+            while True:
+                batch = next(dataloader_stream)
                 train_step(batch)
 
                 estimated_epoch = (
