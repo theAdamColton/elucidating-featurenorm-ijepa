@@ -70,7 +70,7 @@ def _get_image_dataset(
 
     dataset = wds.WebDataset(
         urls=dataset_pattern,
-        shardshuffle=1000 if shuffle else None,
+        shardshuffle=1000 if shuffle else False,
         detshuffle=seed is not None,
         seed=shard_shuffle_seed,
         nodesplitter=wds.split_by_node,
