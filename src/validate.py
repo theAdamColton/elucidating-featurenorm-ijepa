@@ -105,9 +105,12 @@ def validate(
         with torch.autocast(device.type, dtype):
             yield
 
+    # Don't need to shuffle the train dataloader,
+    # because the embeddings will be shuffled after
+    # the dataset is embedded
     val_train_dataloader = get_test_dataloader(
         dataset_pattern=train_dataset_pattern,
-        shuffle=True,
+        shuffle=False,
         image_column_name=image_column_name,
         label_column_name=label_column_name,
         batch_size=batch_size,
@@ -116,6 +119,7 @@ def validate(
         patch_size=patch_size,
         num_workers=num_workers,
     )
+
     val_test_dataloader = get_test_dataloader(
         dataset_pattern=val_dataset_pattern,
         shuffle=False,
