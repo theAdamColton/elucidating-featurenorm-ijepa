@@ -25,7 +25,7 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-          qk_norm_mode: dyntanh
+          should_use_qk_norm: false
         norm_mode: dyntanh
       norm_out_mode: dyntanh
       norm_elementwise_affine: false
@@ -41,7 +41,7 @@ conf:
           embed_dim: 256
           head_dim: 64
           num_attention_heads: 4
-          qk_norm_mode: dyntanh
+          should_use_qk_norm: false
         norm_mode: dyntanh
       norm_out_mode: dyntanh
     predictor_batch_repeat: 4
