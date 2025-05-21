@@ -746,21 +746,15 @@ def main(conf: MainConfig = MainConfig()):
                 else:
                     ema_p.copy_(p)
 
+            # Count the total numbe of samples in this batch
+            num_samples_in_batch = 0
+            for ids_seq in token_ids[..., 0].cpu():
+                ids = torch.unique(ids_seq).tolist()
+                if MASK_SEQUENCE_ID in ids:
+                    ids.remove(MASK_SEQUENCE_ID)
+                num_samples_in_batch += len(ids)
+
             if should_log:
-                num_samples_in_batch = 0
-                for ids_seq in token_ids[..., 0].cpu():
-                    ids = torch.unique(ids_seq).tolist()
-                    if MASK_SEQUENCE_ID in ids:
-                        ids.remove(MASK_SEQUENCE_ID)
-                    num_samples_in_batch += len(ids)
-
-                # An estimate of the number of samples processed since the last log
-                estimated_processed_samples = num_samples_in_batch
-                if training_state["global_step"] > 0:
-                    estimated_processed_samples *= conf.log_every_num_steps
-
-                training_state["num_total_samples"] += estimated_processed_samples
-
                 mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
 
                 wandb.log(
@@ -779,6 +773,7 @@ def main(conf: MainConfig = MainConfig()):
                 )
 
             training_state["global_step"] += 1
+            training_state["num_total_samples"] += num_samples_in_batch
 
             prog_bar.update(1)
             prog_bar.set_description(f"{training_state} loss {round(loss.item(),3)}")
