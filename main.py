@@ -773,7 +773,7 @@ def main(conf: MainConfig = MainConfig()):
                         smooth_rank=result_dict["smooth_rank"].item(),
                         mask_rate=mask_rate,
                         interp=interp,
-                        num_total_samples=estimated_processed_samples,
+                        num_total_samples=training_state["num_total_samples"],
                     ),
                     step=training_state["global_step"],
                 )
