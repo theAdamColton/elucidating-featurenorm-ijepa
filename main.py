@@ -691,87 +691,86 @@ def main(conf: MainConfig = MainConfig()):
 
         for epoch in range(training_state["epoch"], conf.num_epochs):
 
+            def train_step(batch):
+                patches, token_ids = prepare_context_target_batch(batch, device, dtype)
+
+                interp = 0
+                if conf.should_interp:
+                    interp = min(
+                        1, training_state["global_step"] / conf.interp_warmup_steps
+                    )
+
+                ema_beta = (
+                    min(
+                        1,
+                        training_state["global_step"] / conf.ema_beta_warmup_steps,
+                    )
+                    * (conf.ema_beta - conf.ema_beta_start)
+                    + conf.ema_beta_start
+                )
+
+                should_log = (
+                    training_state["global_step"] % conf.log_every_num_steps
+                ) == 0
+
+                with autocast_fn():
+                    result_dict = model(
+                        patches=patches,
+                        token_ids=token_ids,
+                        context_sequence_length=context_sequence_length,
+                        interp=interp,
+                        return_smooth_rank=should_log,
+                    )
+
+                loss = result_dict["loss"]
+
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+
+                lr = (min(1, training_state["global_step"] / conf.num_warmup_steps)) * (
+                    conf.lr - conf.start_lr
+                ) + conf.start_lr
+                for g in optimizer.param_groups:
+                    g["lr"] = lr
+
+                for ema_p, p in zip(
+                    model.ema_encoder.parameters(), model.encoder.parameters()
+                ):
+                    if p.is_floating_point():
+                        ema_p.lerp_(p, 1 - ema_beta)
+                    else:
+                        ema_p.copy_(p)
+
+                if should_log:
+                    num_samples = 0
+                    for ids_seq in token_ids[..., 0].cpu():
+                        ids = torch.unique(ids_seq).tolist()
+                        if MASK_SEQUENCE_ID in ids:
+                            ids.remove(MASK_SEQUENCE_ID)
+                        num_samples += len(ids)
+
+                    mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
+
+                    wandb.log(
+                        dict(
+                            epoch=epoch,
+                            loss=loss.item(),
+                            num_samples=num_samples,
+                            lr=lr,
+                            ema_beta=ema_beta,
+                            smooth_rank=result_dict["smooth_rank"].item(),
+                            mask_rate=mask_rate,
+                            interp=interp,
+                        ),
+                        step=training_state["global_step"],
+                    )
+
+                training_state["global_step"] += 1
+
             def train_epoch():
                 for batch in tqdm(dataloader, desc=f"training epoch {epoch}"):
-                    patches, token_ids = prepare_context_target_batch(
-                        batch, device, dtype
-                    )
-
-                    interp = 0
-                    if conf.should_interp:
-                        interp = min(
-                            1, training_state["global_step"] / conf.interp_warmup_steps
-                        )
-
-                    ema_beta = (
-                        min(
-                            1,
-                            training_state["global_step"] / conf.ema_beta_warmup_steps,
-                        )
-                        * (conf.ema_beta - conf.ema_beta_start)
-                        + conf.ema_beta_start
-                    )
-
-                    should_log = (
-                        training_state["global_step"] % conf.log_every_num_steps
-                    ) == 0
-
-                    with autocast_fn():
-                        result_dict = model(
-                            patches=patches,
-                            token_ids=token_ids,
-                            context_sequence_length=context_sequence_length,
-                            interp=interp,
-                            return_smooth_rank=should_log,
-                        )
-
-                    loss = result_dict["loss"]
-
-                    loss.backward()
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-                    lr = (
-                        min(1, training_state["global_step"] / conf.num_warmup_steps)
-                    ) * (conf.lr - conf.start_lr) + conf.start_lr
-                    for g in optimizer.param_groups:
-                        g["lr"] = lr
-
-                    for ema_p, p in zip(
-                        model.ema_encoder.parameters(), model.encoder.parameters()
-                    ):
-                        if p.is_floating_point():
-                            ema_p.lerp_(p, 1 - ema_beta)
-                        else:
-                            ema_p.copy_(p)
-
-                    if should_log:
-                        num_samples = 0
-                        for ids_seq in token_ids[..., 0].cpu():
-                            ids = torch.unique(ids_seq).tolist()
-                            if MASK_SEQUENCE_ID in ids:
-                                ids.remove(MASK_SEQUENCE_ID)
-                            num_samples += len(ids)
-
-                        mask_rate = (
-                            (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
-                        )
-
-                        wandb.log(
-                            dict(
-                                epoch=epoch,
-                                loss=loss,
-                                num_samples=num_samples,
-                                lr=lr,
-                                ema_beta=ema_beta,
-                                smooth_rank=result_dict["smooth_rank"],
-                                mask_rate=mask_rate,
-                                interp=interp,
-                            ),
-                            step=training_state["global_step"],
-                        )
-
-                    training_state["global_step"] += 1
+                    train_step(batch)
 
                     if conf.test_mode:
                         break

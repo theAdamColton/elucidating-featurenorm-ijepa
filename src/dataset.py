@@ -509,6 +509,8 @@ def _packed_x_y(
             x_patches, y_patches, id, sample
         ):
             yield {"packed_batch": packed_batch, "packed_metadata": packed_metadata}
+            # reset id to avoid overflow
+            id = -1
 
         id += 1
 
