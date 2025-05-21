@@ -98,8 +98,10 @@ class MainConfig:
     interp_warmup_steps: int = 100000
 
     # Webdataset tars
-    train_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar"
-    val_dataset_pattern: str = "/nvme/imagenet1k/imagenet1k-validation-{00..63}.tar"
+    train_dataset_pattern: str = (
+        "/nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar"
+    )
+    val_dataset_pattern: str = "/nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar"
     image_column_name: str = "jpg"
     label_column_name: str = "cls"
     num_classes: int = 1000
