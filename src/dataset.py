@@ -52,11 +52,12 @@ unbatched_tensorset = wds.pipelinefilter(_unbatched_tensorset)
 
 def _get_image_dataset(
     dataset_pattern: str = "",
-    shuffle=True,
+    is_training: bool = True,
     seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
+    dataset_length: int | None = None,
 ):
     # Setup rng
     # Prefer not to use seeding
@@ -67,18 +68,33 @@ def _get_image_dataset(
         shard_shuffle_seed = rng.randint(0, 2**30)
         shuffle_rng = random.Random(rng.randbytes(16))
 
+    def identity(x):
+        return x
+
+    if is_training:
+        nodesplitter = identity
+        workersplitter = identity
+    else:
+        nodesplitter = wds.shardlists.split_by_node
+        workersplitter = wds.shardlists.split_by_worker
+
     dataset = wds.WebDataset(
         urls=dataset_pattern,
-        shardshuffle=1000 if shuffle else False,
+        shardshuffle=1000 if is_training else False,
         detshuffle=seed is not None,
         seed=shard_shuffle_seed,
-        nodesplitter=wds.split_by_node,
+        nodesplitter=nodesplitter,
+        workersplitter=workersplitter,
         empty_check=False,
     )
 
-    if shuffle:
-        dataset = dataset.shuffle(
-            size=shuffle_size_samples, initial=shuffle_size_samples, rng=shuffle_rng
+    if is_training:
+        dataset = (
+            dataset.repeat()
+            .with_epoch(dataset_length if dataset_length is not None else -1)
+            .shuffle(
+                size=shuffle_size_samples, initial=shuffle_size_samples, rng=shuffle_rng
+            )
         )
 
     dataset = dataset.decode("pil", handler=wds.handlers.warn_and_continue).rename(
@@ -272,9 +288,9 @@ class SequenceIDAdder:
         return row
 
 
-def get_test_dataloader(
+def get_simple_dataloader(
     dataset_pattern: str = "",
-    shuffle: bool = True,
+    is_training: bool = True,
     seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
@@ -288,7 +304,7 @@ def get_test_dataloader(
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
-            shuffle=shuffle,
+            is_training=is_training,
             seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
@@ -581,6 +597,7 @@ class PatchesToTensorSet:
 
 def get_context_target_dataloader(
     dataset_pattern: str = "",
+    dataset_length: int = None,
     seed: int | None = None,
     shuffle_size_samples: int = 2000,
     image_column_name: str = "jpg",
@@ -602,6 +619,8 @@ def get_context_target_dataloader(
     Randomly resizes, patches, and splits patches into context and target.
     Then packs context-target pairs, returning packed batches
     """
+
+    assert batch_size % packer_batch_size == 0
 
     resize_multiple_of = patch_size * mask_window_size
 
@@ -663,7 +682,8 @@ def get_context_target_dataloader(
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
-            shuffle=True,
+            is_training=True,
+            dataset_length=dataset_length,
             seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,

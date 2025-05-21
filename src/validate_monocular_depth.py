@@ -10,7 +10,7 @@ import einx
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from src.dataset import get_test_dataloader, TorchImageResizer
+from src.dataset import get_simple_dataloader, TorchImageResizer
 from src.model import IJEPADepthSmart
 from src.utils import get_viz_output_path
 
@@ -138,6 +138,7 @@ def validate_monocular_depth_prediction(
     validation_image_size: int = 256,
     batch_size: int = 256,
     num_workers: int = 4,
+    train_dataset_length: int = None,
     train_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..00047}.tar",
     val_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar",
     dtype: torch.dtype = torch.bfloat16,
@@ -156,13 +157,13 @@ def validate_monocular_depth_prediction(
         reinit="create_new",
     )
 
-    def _get_depth_dataloader(pattern, shuffle=True):
+    def _get_depth_dataloader(pattern, is_training=True):
         # To reduce memory usage
         shuffle_size_samples = 256
         dl = (
-            get_test_dataloader(
+            get_simple_dataloader(
                 pattern,
-                shuffle=shuffle,
+                is_training=is_training,
                 shuffle_size_samples=shuffle_size_samples,
                 image_column_name=image_column_name,
                 batch_size=batch_size,
@@ -250,7 +251,9 @@ def validate_monocular_depth_prediction(
         dpt_head = torch.compile(dpt_head)
 
     def _train():
-        train_dataloader = _get_depth_dataloader(train_dataset_pattern, shuffle=True)
+        train_dataloader = _get_depth_dataloader(
+            train_dataset_pattern, is_training=True
+        )
 
         step = 0
 
@@ -290,7 +293,9 @@ def validate_monocular_depth_prediction(
 
     _train()
 
-    validation_dataloader = _get_depth_dataloader(val_dataset_pattern, shuffle=False)
+    validation_dataloader = _get_depth_dataloader(
+        val_dataset_pattern, is_training=False
+    )
 
     is_first_batch = True
     viz_output_path = get_viz_output_path()

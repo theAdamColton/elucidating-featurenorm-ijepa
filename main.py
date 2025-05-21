@@ -102,6 +102,7 @@ class MainConfig:
         "/nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar"
     )
     val_dataset_pattern: str = "/nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar"
+    train_dataset_length: int = 1281167
     image_column_name: str = "jpg"
     label_column_name: str = "cls"
     num_classes: int = 1000
@@ -110,6 +111,7 @@ class MainConfig:
     monocular_depth_train_dataset_pattern: str = (
         "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..47}.tar"
     )
+    monocular_depth_train_dataset_length: int = 47584
     monocular_depth_val_dataset_pattern: str = (
         "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
     )
@@ -157,6 +159,7 @@ def main(conf: MainConfig = MainConfig()):
     dataloader, context_sequence_length, target_sequence_length = (
         get_context_target_dataloader(
             dataset_pattern=conf.train_dataset_pattern,
+            dataset_length=conf.train_dataset_length,
             seed=conf.seed,
             image_column_name=conf.image_column_name,
             label_column_name=conf.label_column_name,
@@ -319,6 +322,7 @@ def main(conf: MainConfig = MainConfig()):
             batch_size=conf.batch_size,
             num_workers=conf.num_workers,
             train_dataset_pattern=conf.monocular_depth_train_dataset_pattern,
+            train_dataset_length=conf.monocular_depth_train_dataset_length,
             val_dataset_pattern=conf.monocular_depth_val_dataset_pattern,
             feature_depth=conf.validation_monocular_depth_feature_depth,
             dtype=dtype,

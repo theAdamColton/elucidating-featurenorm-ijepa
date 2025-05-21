@@ -12,7 +12,7 @@ from torch import nn
 import torch.nn.functional as F
 import tensorset as ts
 
-from src.dataset import get_test_dataloader
+from src.dataset import get_simple_dataloader
 from src.model import IJEPADepthSmart
 
 
@@ -108,9 +108,9 @@ def validate(
     # Don't need to shuffle the train dataloader,
     # because the embeddings will be shuffled after
     # the dataset is embedded
-    val_train_dataloader = get_test_dataloader(
+    val_train_dataloader = get_simple_dataloader(
         dataset_pattern=train_dataset_pattern,
-        shuffle=False,
+        is_training=False,
         image_column_name=image_column_name,
         label_column_name=label_column_name,
         batch_size=batch_size,
@@ -120,9 +120,9 @@ def validate(
         num_workers=num_workers,
     )
 
-    val_test_dataloader = get_test_dataloader(
+    val_test_dataloader = get_simple_dataloader(
         dataset_pattern=val_dataset_pattern,
-        shuffle=False,
+        is_training=False,
         image_column_name=image_column_name,
         label_column_name=label_column_name,
         batch_size=batch_size,
