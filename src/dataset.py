@@ -1,6 +1,5 @@
 import math
 import random
-import numpy as np
 import torch
 import webdataset as wds
 import tensorset as ts
@@ -127,6 +126,13 @@ class TorchImageResizer:
         return x
 
 
+def pil_to_tensor(x):
+    w, h = x.size
+    x = x.tobytes()
+    x = torch.frombuffer(x, dtype=torch.uint8).reshape(h, w, 3)
+    return x
+
+
 class PILImageResizer:
     """
     square crops to min(h,w)
@@ -147,8 +153,7 @@ class PILImageResizer:
             box=box,
             resample=PIL.Image.Resampling.BILINEAR,
         )
-        x = np.array(x)
-        x = torch.from_numpy(x)
+        x = pil_to_tensor(x)
         row["pixel_values"] = x
         return row
 
@@ -396,7 +401,8 @@ class RandomImageResizer:
             factor = min(size // multiple_of for size in new_image_size)
 
         x = x.convert("RGB").resize(new_image_size, resample=self.resample_mode)
-        x = torch.from_numpy(np.array(x))
+
+        x = pil_to_tensor(x)
 
         row["pixel_values"] = x
 
