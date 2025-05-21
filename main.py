@@ -859,8 +859,6 @@ def main(conf: MainConfig = MainConfig()):
 
                 print("EPOCH", training_state["epoch"], "accuracies", accuracies)
 
-            training_state["epoch"] += 1
-
             if conf.test_mode:
                 break
 
