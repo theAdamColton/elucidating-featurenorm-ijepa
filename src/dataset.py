@@ -34,6 +34,22 @@ def get_tensorset_collation_fn(mode="cat"):
     return tensorset_collation_fn
 
 
+def _unbatched_tensorset(data):
+    for sample in data:
+        assert isinstance(sample, (tuple, list))
+
+        for x in sample:
+            assert isinstance(x, ts.TensorSet)
+
+        b = sample[0].size(0)
+
+        for i in range(b):
+            yield tuple(x.iloc[i] for x in sample)
+
+
+unbatched_tensorset = wds.pipelinefilter(_unbatched_tensorset)
+
+
 def _get_image_dataset(
     dataset_pattern: str = "",
     is_training: bool = True,
@@ -583,7 +599,7 @@ def get_context_target_dataloader(
     dataset_pattern: str = "",
     dataset_length: int = None,
     seed: int | None = None,
-    shuffle_size_samples: int = 2000,
+    shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     label_column_name: str | None = None,
     batch_size: int = 256,
@@ -720,22 +736,22 @@ def get_context_target_dataloader(
             )
         )
         .to_tuple("packed_batch")
-    )
-
-    shuffle_size_micro_batches = max(shuffle_size_samples // packer_batch_size, 16)
-
-    dataloader = (
-        wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
-        # Shuffle micro batches between worker shards
-        .shuffle(
-            size=shuffle_size_micro_batches,
-            initial=shuffle_size_micro_batches,
-            rng=shuffle_rng,
-        )
         .batched(
             batch_size // packer_batch_size,
             collation_fn=get_tensorset_collation_fn("cat"),
         )
+    )
+
+    dataloader = (
+        wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
+        .compose(unbatched_tensorset())
+        # Shuffle samples from different worker shards
+        .shuffle(
+            size=shuffle_size_samples,
+            initial=shuffle_size_samples,
+            rng=shuffle_rng,
+        )
+        .batched(batch_size, collation_fn=get_tensorset_collation_fn("stack"))
     )
 
     return dataloader, packer_context_sequence_length, max_y_sequence_length
