@@ -743,7 +743,7 @@ def get_context_target_dataloader(
     )
 
     dataloader = (
-        wds.WebLoader(dataset, batch_size=None, num_workers=num_workers)
+        wds.WebLoader(dataset, batch_size=None, num_workers=num_workers, in_order=False)
         .compose(unbatched_tensorset())
         # Shuffle samples from different worker shards
         .shuffle(
