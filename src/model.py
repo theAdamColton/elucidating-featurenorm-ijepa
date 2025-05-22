@@ -7,7 +7,7 @@ import einx
 from dataclasses import dataclass, field
 
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig, DynTanh
-from src.dataset import MASK_SEQUENCE_ID
+from src.dataset import MASK_SAMPLE_ID
 
 
 def expand_trailing(y, x):
@@ -241,7 +241,7 @@ class Encoder(nn.Module):
             token_ids[..., 2:],
         )
 
-        is_register = register_ids != MASK_SEQUENCE_ID
+        is_register = register_ids != MASK_SAMPLE_ID
         register_ids = register_ids.masked_fill(~is_register, 0)
         reg_emb = self.reg_emb[register_ids]
         reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
@@ -284,7 +284,7 @@ class Encoder(nn.Module):
                 all_layer_features[i + 1] = x
 
         if config.norm_out_mode == "batchnorm":
-            x = self.norm_out(x, sample_ids != MASK_SEQUENCE_ID)
+            x = self.norm_out(x, sample_ids != MASK_SAMPLE_ID)
         else:
             x = self.norm_out(x)
 
@@ -396,7 +396,7 @@ class Predictor(nn.Module):
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
-        is_register = register_ids != MASK_SEQUENCE_ID
+        is_register = register_ids != MASK_SAMPLE_ID
         register_ids = register_ids.masked_fill(~is_register, 0)
         reg_emb = self.reg_emb[register_ids]
         reg_emb = reg_emb * is_register.unsqueeze(-1)
@@ -519,7 +519,7 @@ class IJEPAModel(nn.Module):
             )
 
         elif config.target_norm_mode == "batchnorm":
-            mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
+            mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
             mean = einx.mean("[n] d", target_hidden_states[mask])
             std = einx.std("[n] d", target_hidden_states[mask])
             target_hidden_states = einx.subtract(
@@ -531,7 +531,7 @@ class IJEPAModel(nn.Module):
             )
 
         elif config.target_norm_mode == "running-batchnorm":
-            mask = y_token_ids[..., 0] != MASK_SEQUENCE_ID
+            mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
             target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
 
         elif config.target_norm_mode == "disabled":
@@ -587,7 +587,7 @@ class IJEPAModel(nn.Module):
         if config.should_attempt_mask_dropping:
             # Try to prevent the predictor from being given padding tokens
             # as part of context
-            is_ctx_padding = x_token_ids[..., 0] == MASK_SEQUENCE_ID
+            is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
             ctx_scores.masked_fill_(is_ctx_padding, -1)
 
         context_idx = ctx_scores.topk(num_ctx_tokens, dim=-1, sorted=False).indices
@@ -599,7 +599,7 @@ class IJEPAModel(nn.Module):
         if config.should_attempt_mask_dropping:
             # Try to prevent the predictor from being given padding tokens
             # as prediction targets
-            is_target_padding = y_token_ids[..., 0] == MASK_SEQUENCE_ID
+            is_target_padding = y_token_ids[..., 0] == MASK_SAMPLE_ID
             target_scores.masked_fill_(is_target_padding, -1)
 
         target_idx = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
@@ -643,12 +643,12 @@ class IJEPAModel(nn.Module):
 
         # Exclude masked tokens from the loss
         target_sequence_ids = combined_token_ids[:, num_ctx_tokens:, 0]
-        is_target_mask = target_sequence_ids != MASK_SEQUENCE_ID
+        is_target_mask = target_sequence_ids != MASK_SAMPLE_ID
 
         if not config.should_predict_register_tokens:
             # Exclude register tokens from the loss
             target_register_ids = combined_token_ids[:, num_ctx_tokens:, 1]
-            is_target_mask = is_target_mask & (target_register_ids == MASK_SEQUENCE_ID)
+            is_target_mask = is_target_mask & (target_register_ids == MASK_SAMPLE_ID)
 
         result_dict = dict(smooth_rank=smooth_rank)
 

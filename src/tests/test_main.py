@@ -1,6 +1,7 @@
 import unittest
 
 
+from src.dataset import ContextTargetDatasetConfig
 from src.model import EncoderConfig, IJEPAConfig, PredictorConfig
 from main import MainConfig, main
 from src.transformer_blocks import (
@@ -22,14 +23,15 @@ class TestMain(unittest.TestCase):
             input_size=16, num_transformer_blocks=1, block_config=block_conf
         )
         model_conf = IJEPAConfig(encoder=encoder_conf, predictor=predictor_conf)
+        context_target_dataset = ContextTargetDatasetConfig(packer_batch_size=2)
         conf = MainConfig(
             should_compile=False,
+            context_target_dataset=context_target_dataset,
             device="cpu",
             dtype="float32",
             model=model_conf,
             validation_monocular_depth_feature_depth=-1,
             batch_size=8,
-            packer_batch_size=4,
             test_mode=True,
             validation_probe_batch_size=32,
             num_workers=0,

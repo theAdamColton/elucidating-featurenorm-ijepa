@@ -29,25 +29,14 @@ def main(conf: MainConfig = MainConfig()):
 
     patch_size = conf.patch_size
 
-    dataloader, context_sequence_length, target_sequence_length = (
-        get_context_target_dataloader(
-            dataset_pattern=conf.train_dataset_pattern,
-            dataset_length=conf.train_dataset_length,
-            seed=conf.seed,
-            image_column_name=conf.image_column_name,
-            label_column_name=conf.label_column_name,
-            batch_size=conf.batch_size,
-            packer_batch_size=conf.packer_batch_size,
-            max_side_length=conf.context_target_max_side_length,
-            min_side_length=conf.context_target_min_side_length,
-            mask_window_size=conf.context_target_mask_window_size,
-            num_register_tokens=conf.num_register_tokens,
-            patch_size=patch_size,
-            min_context_capacity=conf.min_context_capacity,
-            max_context_capacity=conf.max_context_capacity,
-            absolute_max_context_capacity=conf.absolute_max_context_capacity,
-            num_workers=conf.num_workers,
-        )
+    dataloader = get_context_target_dataloader(
+        config=conf.context_target_dataset,
+        dataset_pattern=conf.train_dataset_pattern,
+        dataset_length=conf.train_dataset_length,
+        seed=conf.seed,
+        image_column_name=conf.image_column_name,
+        batch_size=conf.batch_size,
+        num_workers=conf.num_workers,
     )
 
     model = IJEPAModel(conf.model).to(device)
@@ -79,7 +68,12 @@ def main(conf: MainConfig = MainConfig()):
         _load()
 
     if conf.mode == "make-viz":
-        make_viz(dataloader, context_sequence_length, patch_size, num_image_channels)
+        make_viz(
+            dataloader=dataloader,
+            context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
+            patch_size=patch_size,
+            num_image_channels=num_image_channels,
+        )
 
     elif conf.mode == "validate":
         accuracies = validate(
@@ -130,7 +124,7 @@ def main(conf: MainConfig = MainConfig()):
     elif conf.mode == "plot-sample-losses":
         plot_sample_losses(
             dataloader=dataloader,
-            context_sequence_length=context_sequence_length,
+            context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
             model=model,
             device=device,
             dtype=dtype,
@@ -142,7 +136,7 @@ def main(conf: MainConfig = MainConfig()):
     elif conf.mode == "visualize-embeddings":
         visualize_embeddings(
             dataloader=dataloader,
-            context_sequence_length=context_sequence_length,
+            context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
             model=model,
             device=device,
             dtype=dtype,
@@ -158,8 +152,6 @@ def main(conf: MainConfig = MainConfig()):
             training_state=training_state,
             conf=conf,
             dataloader=dataloader,
-            context_sequence_length=context_sequence_length,
-            target_sequence_length=target_sequence_length,
             device=device,
             dtype=dtype,
         )

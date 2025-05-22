@@ -12,7 +12,6 @@ class MainConfig:
     dtype: str = "bfloat16"
     device: str = "cuda"
     batch_size: int = 256
-    packer_batch_size: int = 64
     num_workers: int = 0
     seed: int | None = None
     num_warmup_steps: int = 5000
@@ -89,7 +88,14 @@ class MainConfig:
     ] = "train"
 
     def __post_init__(self):
-        assert self.batch_size % self.packer_batch_size == 0
-        assert self.packer_batch_size <= self.batch_size
-        image_channels = 3
-        assert self.model.encoder.input_size == image_channels * self.patch_size**2
+        assert (
+            self.model.encoder.input_size
+            == self.num_image_channels * self.patch_size**2
+        )
+
+        assert self.batch_size % self.context_target_dataset.packer_batch_size == 0
+        assert self.context_target_dataset.packer_batch_size <= self.batch_size
+        assert self.context_target_dataset.patch_size == self.patch_size
+        assert (
+            self.num_register_tokens == self.context_target_dataset.num_register_tokens
+        )

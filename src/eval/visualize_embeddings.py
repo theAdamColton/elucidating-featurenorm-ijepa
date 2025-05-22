@@ -12,7 +12,7 @@ import torch
 
 import torch.nn.functional as F
 import tensorset as ts
-from src.dataset import MASK_SEQUENCE_ID
+from src.dataset import MASK_SAMPLE_ID
 from src.utils import get_viz_output_path
 
 
@@ -180,8 +180,8 @@ def visualize_embeddings(
         unique_sequence_ids = sequence_ids.unique().tolist()
         unique_sequence_ids.sort()
 
-        if MASK_SEQUENCE_ID in unique_sequence_ids:
-            unique_sequence_ids.remove(MASK_SEQUENCE_ID)
+        if MASK_SAMPLE_ID in unique_sequence_ids:
+            unique_sequence_ids.remove(MASK_SAMPLE_ID)
         for sequence_id in unique_sequence_ids:
             sequence_mask = sequence_ids == sequence_id
 

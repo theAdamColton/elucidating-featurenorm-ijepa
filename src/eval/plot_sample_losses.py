@@ -3,7 +3,7 @@ import einx
 import torchvision
 import matplotlib.pyplot as plt
 import tensorset as ts
-from src.dataset import MASK_SEQUENCE_ID
+from src.dataset import MASK_SAMPLE_ID
 from src.utils import get_viz_output_path
 
 
@@ -59,8 +59,8 @@ def plot_sample_losses(
     batch_unique_sample_ids = []
     for i in range(b):
         unique_sample_ids = torch.unique(sample_ids[i]).tolist()
-        if MASK_SEQUENCE_ID in unique_sample_ids:
-            unique_sample_ids.remove(MASK_SEQUENCE_ID)
+        if MASK_SAMPLE_ID in unique_sample_ids:
+            unique_sample_ids.remove(MASK_SAMPLE_ID)
         batch_unique_sample_ids.append(unique_sample_ids)
 
     sample_losses = [

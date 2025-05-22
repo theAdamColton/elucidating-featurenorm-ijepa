@@ -11,7 +11,7 @@ import wandb
 import tensorset as ts
 
 from main_conf import MainConfig
-from src.dataset import MASK_SEQUENCE_ID
+from src.dataset import MASK_SAMPLE_ID
 from src.model import IJEPAModel
 from src.validate import validate
 
@@ -24,16 +24,12 @@ class Trainer:
         training_state: dict,
         conf: MainConfig,
         dataloader,
-        context_sequence_length: int,
-        target_sequence_length: int,
         device,
         dtype,
     ):
         self.model = model
         self.conf = conf
         self.dataloader = dataloader
-        self.context_sequence_length = context_sequence_length
-        self.target_sequence_length = target_sequence_length
         self.device = device
         self.dtype = dtype
         self.training_state = training_state
@@ -139,7 +135,7 @@ class Trainer:
             result_dict = self.model(
                 patches=patches,
                 token_ids=token_ids,
-                context_sequence_length=self.context_sequence_length,
+                context_sequence_length=self.conf.context_target_dataset.packer_context_sequence_length,
                 interp=interp,
                 return_smooth_rank=should_log,
             )
@@ -168,15 +164,15 @@ class Trainer:
         num_samples_in_batch = 0
         for ids_seq in token_ids[..., 0].cpu():
             ids = torch.unique(ids_seq).tolist()
-            if MASK_SEQUENCE_ID in ids:
-                ids.remove(MASK_SEQUENCE_ID)
+            if MASK_SAMPLE_ID in ids:
+                ids.remove(MASK_SAMPLE_ID)
             num_samples_in_batch += len(ids)
 
         elapsed = time.time() - start_time
         samples_per_second = num_samples_in_batch / elapsed
 
         if should_log:
-            mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
+            mask_rate = (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean()
 
             wandb.log(
                 dict(

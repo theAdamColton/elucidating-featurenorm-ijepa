@@ -2,7 +2,7 @@ import torch
 import einx
 import torchvision
 
-from src.dataset import MASK_SEQUENCE_ID
+from src.dataset import MASK_SAMPLE_ID
 from src.utils import get_viz_output_path
 
 
@@ -34,16 +34,16 @@ def make_viz(dataloader, context_sequence_length, patch_size, num_image_channels
         y_seq = y_patches.iloc[i]
         sequence_ids = x_seq["sequence_ids"].unique().tolist()
         for j in sequence_ids:
-            if j == MASK_SEQUENCE_ID:
+            if j == MASK_SAMPLE_ID:
                 continue
 
             device = x_seq["patches"].device
 
             x_sample_mask = (x_seq["sequence_ids"] == j) & (
-                x_seq["position_ids"][..., 0] == MASK_SEQUENCE_ID
+                x_seq["position_ids"][..., 0] == MASK_SAMPLE_ID
             )
             y_sample_mask = (y_seq["sequence_ids"] == j) & (
-                y_seq["position_ids"][..., 0] == MASK_SEQUENCE_ID
+                y_seq["position_ids"][..., 0] == MASK_SAMPLE_ID
             )
 
             x_sample = x_seq.iloc[x_sample_mask]

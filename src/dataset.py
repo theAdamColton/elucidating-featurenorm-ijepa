@@ -1,3 +1,5 @@
+import os
+import time
 import math
 from dataclasses import dataclass
 import random
@@ -10,7 +12,9 @@ import torchvision
 
 from src.packer import PairPacker
 
-MASK_SEQUENCE_ID = -100
+MASK_SAMPLE_ID = -100
+MAX_SAMPLE_ID = torch.iinfo(torch.long).max
+MIN_SAMPLE_ID = torch.iinfo(torch.long).min
 
 
 def get_tensorset_collation_fn(mode="cat"):
@@ -258,7 +262,7 @@ class RegisterTokenAdder:
         )
         position_ids = torch.cat((padding, position_ids))
 
-        register_ids = torch.full((num_register_tokens + s,), MASK_SEQUENCE_ID)
+        register_ids = torch.full((num_register_tokens + s,), MASK_SAMPLE_ID)
 
         if num_register_tokens > 0:
             register_ids[:num_register_tokens] = torch.arange(
@@ -275,7 +279,7 @@ class RegisterTokenAdder:
         return row
 
 
-class SequenceIDAdder:
+class DummySampleIDAdder:
     def __call__(self, row):
         token_ids = row.pop("position_ids")
 
@@ -316,7 +320,7 @@ def get_simple_dataloader(
         .map(ImagePatcher(patch_size))
         .map(TokenFlattener())
         .map(RegisterTokenAdder(num_register_tokens))
-        .map(SequenceIDAdder())
+        .map(DummySampleIDAdder())
     )
 
     if batch_size is not None:
@@ -527,15 +531,46 @@ class ContextTargetSplitter:
         return row
 
 
-def _addin_sample_ids(x: ts.TensorSet, id):
-    x_length = x.size(0)
-    ids = torch.full(
-        size=(x_length,),
-        fill_value=id,
-        dtype=torch.long,
-        device=x.all_columns[0].device,
-    )
-    x.named_columns["sequence_ids"] = ids
+def _get_random_sample_id(rng):
+    sample_id = MASK_SAMPLE_ID
+    while sample_id == MASK_SAMPLE_ID:
+        sample_id = rng.randint(MIN_SAMPLE_ID, MAX_SAMPLE_ID - 1)
+    return sample_id
+
+
+def _assign_sample_ids(data, rng=None):
+    if rng is None:
+        rng = random.Random(int((os.getpid() + time.time()) * 1e9))
+
+    for sample in data:
+        sample_id = _get_random_sample_id(rng)
+
+        sample["sample_id"] = sample_id
+        yield sample
+
+
+assign_sample_ids = wds.pipelinefilter(_assign_sample_ids)
+
+
+class AddSampleIdsToTensorSet:
+    def __init__(self, k):
+        self.k = k
+
+    def __call__(self, row):
+        x = row.pop(self.k)
+        sample_id = row["sample_id"]
+
+        x_length = x.size(0)
+        ids = torch.full(
+            size=(x_length,),
+            fill_value=sample_id,
+            dtype=torch.long,
+            device=x.all_columns[0].device,
+        )
+        x.named_columns["sequence_ids"] = ids
+
+        row[self.k] = x
+        return row
 
 
 def _verify_patches(sample, name="patches"):
@@ -564,23 +599,17 @@ def _packed_x_y(
         batch_size=batch_size,
         pad_value_dict=pad_value_dict,
     )
-    id = 0
     for sample in data:
         _verify_patches(sample, "x_patches")
         _verify_patches(sample, "y_patches")
         x_patches, y_patches = sample.pop("x_patches"), sample.pop("y_patches")
-        _addin_sample_ids(x_patches, id)
-        _addin_sample_ids(y_patches, id)
+        sample_id = sample.pop("sample_id")
 
         # Yields once or zero times
         for packed_batch, packed_metadata in packer.append(
-            x_patches, y_patches, id, sample
+            x_patches, y_patches, sample_id, sample
         ):
             yield {"packed_batch": packed_batch, "packed_metadata": packed_metadata}
-            # reset id to avoid overflow
-            id = -1
-
-        id += 1
 
 
 packed_x_y = wds.pipelinefilter(_packed_x_y)
@@ -599,6 +628,8 @@ class PatchesToTensorSet:
 
 @dataclass
 class ContextTargetDatasetConfig:
+    num_register_tokens: int = 0
+    patch_size: int = 16
     packer_batch_size: int = 64
     max_side_length: int = 256
     min_side_length: int = 64
@@ -606,6 +637,38 @@ class ContextTargetDatasetConfig:
     min_context_capacity: float = 0.05
     max_context_capacity: float = 0.95
     absolute_max_context_capacity: float = 0.5
+
+    def __post_init__(self):
+        # Resize images to this multiple
+        self.resize_multiple_of = self.patch_size * self.mask_window_size
+
+        max_sequence_length = (self.max_side_length // self.patch_size) ** 2
+        # Absolute maximum number of pixels for resized images
+        self.max_num_pixels = max_sequence_length * self.patch_size**2
+
+        # For an input of max_sequence_length,
+        # the context recieves a random sequence length between
+        # min_context_sequence_length and max_context_sequence_length.
+        # This means that there are a maximum of (max_sequence_length - min_context_sequence_length) tokens
+        # that are exclusive to the target.
+        self.max_context_sequence_length = int(
+            round(max_sequence_length * self.absolute_max_context_capacity)
+        )
+
+        min_context_windows = int(
+            (max_sequence_length // self.mask_window_size**2)
+            * self.min_context_capacity
+        )
+        min_context_sequence_length = min_context_windows * self.mask_window_size**2
+
+        self.max_y_sequence_length = max_sequence_length - min_context_sequence_length
+
+        # Register tokens are added to the context after being patched;
+        # the context sequence length grows by num_register_tokens just before being packed
+        # This is the final context sequence length of batches returned by the dataloader
+        self.packer_context_sequence_length = (
+            self.max_context_sequence_length + self.num_register_tokens
+        )
 
 
 def get_context_target_dataloader(
@@ -616,8 +679,6 @@ def get_context_target_dataloader(
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     batch_size: int = 256,
-    patch_size: int = 16,
-    num_register_tokens: int = 8,
     num_workers: int = 0,
 ):
     """
@@ -626,56 +687,17 @@ def get_context_target_dataloader(
     Then packs context-target pairs, returning packed batches
     """
 
-    packer_batch_size = config.packer_batch_size
-    max_side_length = config.max_side_length
-    min_side_length = config.min_side_length
-    mask_window_size = config.mask_window_size
-    min_context_capacity = config.min_context_capacity
-    max_context_capacity = config.max_context_capacity
-    absolute_max_context_capacity = config.absolute_max_context_capacity
-
-    assert batch_size % packer_batch_size == 0
-
-    resize_multiple_of = patch_size * mask_window_size
-
-    max_sequence_length = (max_side_length // patch_size) ** 2
-    max_num_pixels = max_sequence_length * patch_size**2
-
-    # For an input of max_sequence_length,
-    # the context recieves a random sequence length between
-    # min_context_sequence_length and max_context_sequence_length.
-    # This means that there are a maximum of (max_sequence_length - min_context_sequence_length) tokens
-    # that are exclusive to the target.
-
-    # max_context_sequence_length = int(round(max_sequence_length * max_context_capacity))
-    # min_context_sequence_length = int(round(max_sequence_length * min_context_capacity))
-
-    # TODO try to reproduce good run by masking high resolution inputs more than
-    # low resolution inputs
-    # TODO add this as configurable option
-    max_context_sequence_length = int(
-        round(max_sequence_length * absolute_max_context_capacity)
-    )
-    min_context_windows = int(
-        (max_sequence_length // mask_window_size**2) * min_context_capacity
-    )
-    min_context_sequence_length = min_context_windows * mask_window_size**2
-
-    max_y_sequence_length = max_sequence_length - min_context_sequence_length
-
-    # Register tokens are added to the context after being patched;
-    # the context sequence length grows by num_register_tokens just before being packed
-    packer_context_sequence_length = max_context_sequence_length + num_register_tokens
+    assert batch_size % config.packer_batch_size == 0
 
     print(
-        f"Creating context target dataset: packer_context_sequence_length: {packer_context_sequence_length} \
-          teacher sequence length {packer_context_sequence_length + max_y_sequence_length}"
+        f"Creating context target dataset: packer_context_sequence_length: {config.packer_context_sequence_length} \
+          teacher sequence length {config.packer_context_sequence_length + config.max_y_sequence_length}"
     )
 
     tensorset_pad_value_dict = {
         "position_ids": 0,
         "patches": 0,
-        "sequence_ids": MASK_SEQUENCE_ID,
+        "sequence_ids": MASK_SAMPLE_ID,
     }
 
     if seed is not None:
@@ -702,30 +724,30 @@ def get_context_target_dataloader(
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
         )
-        .select(ImageSizeFilter(min_side_length))
+        .select(ImageSizeFilter(config.min_side_length))
         .map(
             RandomImageResizer(
-                max_side_length=max_side_length,
-                min_side_length=min_side_length,
-                multiple_of=resize_multiple_of,
-                max_num_pixels=max_num_pixels,
+                max_side_length=config.max_side_length,
+                min_side_length=config.min_side_length,
+                multiple_of=config.resize_multiple_of,
+                max_num_pixels=config.max_num_pixels,
                 rng=resizer_rng,
             )
         )
-        .map(ImagePatcher(patch_size))
+        .map(ImagePatcher(config.patch_size))
         .map(
             ContextTargetSplitter(
-                window_size=mask_window_size,
-                min_context_capacity=min_context_capacity,
-                max_context_capacity=max_context_capacity,
-                max_context_sequence_length=max_context_sequence_length,
+                window_size=config.mask_window_size,
+                min_context_capacity=config.min_context_capacity,
+                max_context_capacity=config.max_context_capacity,
+                max_context_sequence_length=config.max_context_sequence_length,
                 rng=splitter_rng,
             )
         )
         # Add register tokens only to the context
         .map(
             RegisterTokenAdder(
-                num_register_tokens=num_register_tokens,
+                num_register_tokens=config.num_register_tokens,
                 token_column_name="x_patches",
                 position_id_column_name="x_position_ids",
             )
@@ -738,19 +760,30 @@ def get_context_target_dataloader(
             )
         )
         .map(PatchesToTensorSet())
-        .rename(x_patches="x_patches", y_patches="y_patches", keep=False)
-        # Pack samples on the main process
+        # Give a unique sample id to each row
+        .compose(assign_sample_ids())
+        # Add in the sample ids to the tensorset
+        .map(AddSampleIdsToTensorSet("x_patches"))
+        .map(AddSampleIdsToTensorSet("y_patches"))
+        # Drop all columns except for these
+        .rename(
+            x_patches="x_patches",
+            y_patches="y_patches",
+            sample_id="sample_id",
+            keep=False,
+        )
+        # Pack samples into micro batches
         .compose(
             packed_x_y(
-                packer_context_sequence_length,
-                max_y_sequence_length,
-                packer_batch_size,
+                config.packer_context_sequence_length,
+                config.max_y_sequence_length,
+                config.packer_batch_size,
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
         .to_tuple("packed_batch")
         .batched(
-            batch_size // packer_batch_size,
+            batch_size // config.packer_batch_size,
             collation_fn=get_tensorset_collation_fn("cat"),
         )
     )
@@ -767,7 +800,20 @@ def get_context_target_dataloader(
         .batched(batch_size, collation_fn=get_tensorset_collation_fn("stack"))
     )
 
-    return dataloader, packer_context_sequence_length, max_y_sequence_length
+    return dataloader
+
+
+def _add_unique_ids(data):
+    pass
+
+
+def _repeat_samples(data, amount):
+    for sample in data:
+        for _ in range(amount):
+            yield sample
+
+
+repeat_samples = wds.pipelinefilter(_repeat_samples)
 
 
 def get_lidar_batches(
@@ -784,3 +830,39 @@ def get_lidar_batches(
     but keeps track of the unique ID of each image,
     and repeats images a large number of times ~50
     """
+
+    if seed is not None:
+        print(
+            "Warning! Seeding should only be used for testing purposes and not for pretraining!"
+        )
+        rng = random.Random()
+        rng.seed(seed)
+        resizer_rng = random.Random(rng.randbytes(16))
+        splitter_rng = random.Random(rng.randbytes(16))
+        shuffle_rng = random.Random(rng.randbytes(16))
+    else:
+        rng = None
+        resizer_rng = None
+        splitter_rng = None
+        shuffle_rng = None
+
+    dataset = (
+        _get_image_dataset(
+            dataset_pattern=dataset_pattern,
+            is_training=False,
+            seed=seed,
+            image_column_name=image_column_name,
+        )
+        .select(ImageSizeFilter(config.min_side_length))
+        .map(
+            RandomImageResizer(
+                max_side_length=config.max_side_length,
+                min_side_length=config.min_side_length,
+                multiple_of=config.resize_multiple_of,
+                max_num_pixels=config.max_num_pixels,
+                rng=resizer_rng,
+            )
+        )
+        .map(ImagePatcher(config.patch_size))
+        .compose(repeat_samples(num_repeat))
+    )
