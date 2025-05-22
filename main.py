@@ -1,114 +1,19 @@
-from typing import Literal
-from dataclasses import dataclass, field, asdict
-import yaml
 from contextlib import contextmanager
-from pathlib import Path
 import random
 
 import numpy as np
 import jsonargparse
 import torch
 
+from main_conf import MainConfig
 from src.dataset import get_context_target_dataloader
-from src.model import IJEPAConfig, IJEPAModel
+from src.model import IJEPAModel
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
 from src.trainer import Trainer
 from src.scripts.make_viz import make_viz
 from src.scripts.plot_sample_losses import plot_sample_losses
 from src.scripts.visualize_embeddings import visualize_embeddings
-
-
-@dataclass
-class MainConfig:
-    should_compile: bool = False
-    dtype: str = "bfloat16"
-    device: str = "cuda"
-    batch_size: int = 256
-    packer_batch_size: int = 64
-    num_workers: int = 0
-    seed: int | None = None
-    num_warmup_steps: int = 5000
-    start_lr: float = 1e-4
-    lr: float = 5e-4
-    num_epochs: int = 800
-
-    patch_size: int = 16
-
-    log_every_num_steps: int = 50
-    validate_every_num_epochs: int = 10
-    max_num_save_checkpoints: int = 2
-
-    context_target_max_side_length: int = 256
-    context_target_min_side_length: int = 64
-    context_target_mask_window_size: int = 2
-
-    validation_probe_lr: float = 1e-3
-    validation_monocular_depth_lr: float = 5e-4
-    validation_image_size: int = 256
-    validation_train_epochs: int = 50
-    validation_monocular_depth_train_epochs: int = 10
-    # Extract features from the 4th to last layer of the encoder to perform monocular depth estimation
-    validation_monocular_depth_feature_depth: int = -4
-    validation_probe_batch_size: int = 2048
-    validation_extraction_mode: Literal["extract-layers", "lastlayer"] = (
-        "extract-layers"
-    )
-
-    resume_path: str | None = None
-
-    test_mode: bool = False
-
-    num_image_channels: int = 3
-
-    ema_beta: float = 0.996
-    ema_beta_start: float = 0.2
-    ema_beta_warmup_steps: int = 1000
-
-    should_interp: bool = False
-    interp_warmup_steps: int = 100000
-
-    # Webdataset tars
-    train_dataset_pattern: str = (
-        "/nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar"
-    )
-    val_dataset_pattern: str = "/nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar"
-    train_dataset_length: int = 1281167
-    image_column_name: str = "jpg"
-    label_column_name: str = "cls"
-    num_classes: int = 1000
-
-    # Webdataset tars
-    monocular_depth_train_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..47}.tar"
-    )
-    monocular_depth_train_dataset_length: int = 47584
-    monocular_depth_val_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
-    )
-    depth_column_name: str = "depth.npy"
-
-    num_register_tokens: int = 0
-    min_context_capacity: float = 0.05
-    max_context_capacity: float = 0.95
-    absolute_max_context_capacity: float = 0.5
-
-    model: IJEPAConfig = field(default_factory=lambda: IJEPAConfig())
-
-    mode: Literal[
-        "make-viz",
-        "train",
-        "validate",
-        "visualize-embeddings",
-        "plot-sample-losses",
-        "validate-monocular-depth",
-    ] = "train"
-
-    def __post_init__(self):
-        assert self.batch_size % self.packer_batch_size == 0
-        assert self.packer_batch_size <= self.batch_size
-        image_channels = 3
-        assert self.model.encoder.input_size == image_channels * self.patch_size**2
 
 
 def main(conf: MainConfig = MainConfig()):
@@ -120,7 +25,6 @@ def main(conf: MainConfig = MainConfig()):
     device = torch.device(conf.device)
     dtype = getattr(torch, conf.dtype)
 
-    input_size = conf.model.encoder.input_size
     num_image_channels = conf.num_image_channels
 
     patch_size = conf.patch_size
@@ -154,9 +58,11 @@ def main(conf: MainConfig = MainConfig()):
             yield
 
     if conf.resume_path is not None:
+
         def _load():
             d = torch.load(conf.resume_path, map_location=device, weights_only=False)
             model.load_state_dict(d["model"], strict=False)
+
         _load()
 
     if conf.mode == "make-viz":
@@ -217,7 +123,7 @@ def main(conf: MainConfig = MainConfig()):
             dtype=dtype,
             patch_size=patch_size,
             num_image_channels=num_image_channels,
-            autocast_fn=autocast_fn
+            autocast_fn=autocast_fn,
         )
 
     elif conf.mode == "visualize-embeddings":
@@ -229,7 +135,7 @@ def main(conf: MainConfig = MainConfig()):
             dtype=dtype,
             patch_size=patch_size,
             num_image_channels=num_image_channels,
-            autocast_fn=autocast_fn
+            autocast_fn=autocast_fn,
         )
 
     elif conf.mode == "train":
@@ -240,7 +146,7 @@ def main(conf: MainConfig = MainConfig()):
             context_sequence_length=context_sequence_length,
             target_sequence_length=target_sequence_length,
             device=device,
-            dtype=dtype
+            dtype=dtype,
         )
         trainer.train()
 

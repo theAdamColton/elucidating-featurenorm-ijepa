@@ -9,12 +9,23 @@ import torch
 import wandb
 import tensorset as ts
 
+from main_conf import MainConfig
 from src.dataset import MASK_SEQUENCE_ID
+from src.model import IJEPAModel
 from src.validate import validate
 
 
 class Trainer:
-    def __init__(self, model, conf, dataloader, context_sequence_length, target_sequence_length, device, dtype):
+    def __init__(
+        self,
+        model: IJEPAModel,
+        conf: MainConfig,
+        dataloader,
+        context_sequence_length: int,
+        target_sequence_length: int,
+        device,
+        dtype,
+    ):
         self.model = model
         self.conf = conf
         self.dataloader = dataloader
@@ -24,37 +35,42 @@ class Trainer:
         self.dtype = dtype
         self.training_state = dict(global_step=0, epoch=0, num_total_samples=0)
         self.patch_size = conf.patch_size
-        
+
         self.trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
-        
+
         self.optimizer = torch.optim.AdamW(
-            self.trainable_params, lr=conf.start_lr, betas=(0.9, 0.95), weight_decay=0.05
+            self.trainable_params,
+            lr=conf.start_lr,
+            betas=(0.9, 0.95),
+            weight_decay=0.05,
         )
-        
+
         self.checkpoint_folder_path = (
             Path("checkpoints") / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        
+
         if conf.resume_path is not None:
             self._load_checkpoint()
-            
+
         if conf.should_compile:
             self.model = torch.compile(self.model)
-            
+
     def _load_checkpoint(self):
-        d = torch.load(self.conf.resume_path, map_location=self.device, weights_only=False)
+        d = torch.load(
+            self.conf.resume_path, map_location=self.device, weights_only=False
+        )
         self.model.load_state_dict(d["model"], strict=False)
         self.training_state.update(d["training_state"])
         try:
             self.optimizer.load_state_dict(d["optimizer"])
         except Exception as e:
             print("Could not load optimizer state dict! Error:", e)
-            
+
     @contextmanager
     def autocast_fn(self):
         with torch.autocast(self.device.type, self.dtype):
             yield
-            
+
     def prepare_context_target_batch(self, batch):
         packed_batch, *_ = batch
 
@@ -75,7 +91,7 @@ class Trainer:
         patches = (patches / 255) * 2 - 1
 
         return patches, token_ids
-            
+
     def save_checkpoint(self):
         self.checkpoint_folder_path.mkdir(exist_ok=True, parents=True)
 
@@ -114,7 +130,7 @@ class Trainer:
         conf_dict = dict(conf=conf_dict)
         with open(yaml_save_path, "w") as f:
             yaml.dump(conf_dict, f)
-            
+
     def train_step(self, batch):
         patches, token_ids = self.prepare_context_target_batch(batch)
 
@@ -133,7 +149,9 @@ class Trainer:
             + self.conf.ema_beta_start
         )
 
-        should_log = (self.training_state["global_step"] % self.conf.log_every_num_steps) == 0
+        should_log = (
+            self.training_state["global_step"] % self.conf.log_every_num_steps
+        ) == 0
 
         with self.autocast_fn():
             result_dict = self.model(
@@ -150,9 +168,9 @@ class Trainer:
         self.optimizer.step()
         self.optimizer.zero_grad()
 
-        lr = (min(1, self.training_state["global_step"] / self.conf.num_warmup_steps)) * (
-            self.conf.lr - self.conf.start_lr
-        ) + self.conf.start_lr
+        lr = (
+            min(1, self.training_state["global_step"] / self.conf.num_warmup_steps)
+        ) * (self.conf.lr - self.conf.start_lr) + self.conf.start_lr
         for g in self.optimizer.param_groups:
             g["lr"] = lr
 
@@ -194,17 +212,18 @@ class Trainer:
         self.training_state["num_total_samples"] += num_samples_in_batch
 
         return loss.item()
-    
+
     def train_one_epoch(self, dataloader_stream, prog_bar):
         while True:
             batch = next(dataloader_stream)
             loss = self.train_step(batch)
-            
+
             prog_bar.update(1)
             prog_bar.set_description(f"{self.training_state} loss {round(loss, 3)}")
 
             estimated_epoch = (
-                self.training_state["num_total_samples"] // self.conf.train_dataset_length
+                self.training_state["num_total_samples"]
+                // self.conf.train_dataset_length
             )
 
             if estimated_epoch > self.training_state["epoch"]:
@@ -213,7 +232,7 @@ class Trainer:
 
             if self.conf.test_mode:
                 return
-                
+
     def run_validation(self):
         gc.collect()
         torch.cuda.empty_cache()
@@ -264,7 +283,7 @@ class Trainer:
 
         print("EPOCH", self.training_state["epoch"], "accuracies", accuracies)
         return accuracies
-                
+
     def train(self):
         conf_d = asdict(self.conf)
         conf_d["num_params"] = sum(p.nelement() for p in self.trainable_params)
@@ -274,10 +293,10 @@ class Trainer:
             config=conf_d,
             mode="disabled" if self.conf.test_mode else None,
         )
-        
+
         prog_bar = tqdm(desc="training")
         dataloader_stream = iter(self.dataloader)
-        
+
         for _ in range(self.conf.num_epochs):
             self.train_one_epoch(dataloader_stream, prog_bar)
 
@@ -287,7 +306,11 @@ class Trainer:
                 or is_last_epoch
                 or (
                     (self.training_state["epoch"] > 0)
-                    and (self.training_state["epoch"] % self.conf.validate_every_num_epochs == 0)
+                    and (
+                        self.training_state["epoch"]
+                        % self.conf.validate_every_num_epochs
+                        == 0
+                    )
                 )
             )
 
