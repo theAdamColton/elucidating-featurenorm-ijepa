@@ -1,7 +1,7 @@
 [project]
-name = "ijepa-depthsmart"
+name = "ijepa-tanh"
 version = "0.1.0"
-description = "Add your description here"
+description = "Elucidating the role of feature normalization in IJEPA"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

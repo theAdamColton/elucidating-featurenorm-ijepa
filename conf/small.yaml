@@ -4,11 +4,12 @@ conf:
   device: cuda
   batch_size: 256
   num_workers: 4
-  ema_beta_start: 0.85
-  ema_beta: 0.996
-  ema_beta_warmup_steps: 500
+  ema_beta_start: 0.995
+  ema_beta: 0.9999
+  ema_beta_warmup_steps: 150000
   start_lr: 1e-4
-  lr: 5e-4
+  lr: 1e-3
+  num_warmup_steps: 10000
   interp_warmup_steps: 30000
   train_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar
   val_dataset_pattern: /nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar
@@ -44,8 +45,7 @@ conf:
           should_use_qk_norm: false
         norm_mode: dyntanh
       norm_out_mode: dyntanh
-    predictor_batch_repeat: 8
-    depthsmart_mode: disabled
+    predictor_batch_repeat: 4
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true

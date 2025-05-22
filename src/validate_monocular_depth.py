@@ -11,7 +11,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from src.dataset import get_simple_dataloader, TorchImageResizer
-from src.model import IJEPADepthSmart
+from src.model import IJEPAModel
 from src.utils import get_viz_output_path
 
 
@@ -131,7 +131,7 @@ def _squeeze_channels(x):
 
 
 def validate_monocular_depth_prediction(
-    model: IJEPADepthSmart,
+    model: IJEPAModel,
     image_column_name: str = "jpg",
     depth_column_name: str = "depth.npy",
     patch_size: int = 16,
@@ -196,10 +196,10 @@ def validate_monocular_depth_prediction(
     def _compute_losses(pixel_values, token_ids, depth):
         # scale to [-1,1]
         pixel_values = (pixel_values / 255) * 2 - 1
+
         with torch.inference_mode():
             _, layer_features = encoder(
                 x=pixel_values,
-                t=None,
                 token_ids=token_ids,
                 return_all_layer_features=True,
             )

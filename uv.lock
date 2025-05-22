@@ -469,7 +469,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ijepa-depthsmart"
+name = "ijepa-tanh"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

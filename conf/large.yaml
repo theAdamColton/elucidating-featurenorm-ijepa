@@ -38,7 +38,6 @@ conf:
           head_dim: 64
           num_attention_heads: 6
     predictor_batch_repeat: 4
-    depthsmart_mode: disabled
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true

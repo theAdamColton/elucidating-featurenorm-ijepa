@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import tensorset as ts
 
 from src.dataset import get_simple_dataloader
-from src.model import IJEPADepthSmart
+from src.model import IJEPAModel
 
 
 class MultiDepthClassifier(nn.Module):
@@ -71,7 +71,7 @@ batch_embeddings = wds.pipelinefilter(_batch_embeddings)
 
 
 def validate(
-    model: IJEPADepthSmart,
+    model: IJEPAModel,
     image_column_name: str = "jpg",
     label_column_name: str = "cls",
     patch_size: int = 16,
@@ -87,8 +87,8 @@ def validate(
     validation_probe_lr: float = 1e-3,
     validation_probe_batch_size: int = 2048,
     validation_train_epochs: int = 50,
-    validation_depthsmart_mode: Literal[
-        "learned", "extract-layers", "lastlayer"
+    validation_extraction_mode: Literal[
+        "extract-layers", "lastlayer"
     ] = "extract-layers",
     num_register_tokens: int = 0,
 ):
@@ -150,38 +150,22 @@ def validate(
 
                     token_ids = token_ids.to(device)
 
-                    if validation_depthsmart_mode == "extract-layers":
-                        # Full depth
-                        t = torch.full(
-                            (b, s),
-                            num_feature_depth - 1,
-                            device=device,
-                        )
-
+                    if validation_extraction_mode == "extract-layers":
                         with autocast_fn():
                             with torch.inference_mode():
                                 _, layer_features = encoder(
                                     pixel_values,
-                                    t,
                                     token_ids,
                                     return_all_layer_features=True,
                                 )
 
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 
-                    elif validation_depthsmart_mode == "lastlayer":
-                        # Full depth
-                        t = torch.full(
-                            (b, s),
-                            num_feature_depth - 1,
-                            device=device,
-                        )
-
+                    elif validation_extraction_mode == "lastlayer":
                         with autocast_fn():
                             with torch.inference_mode():
                                 layer_features, *_ = encoder(
                                     pixel_values,
-                                    t,
                                     token_ids,
                                     return_all_layer_features=True,
                                 )
@@ -189,22 +173,6 @@ def validate(
                         layer_features = einx.mean(
                             "b s d -> b one d", layer_features, one=1
                         )
-
-                    elif validation_depthsmart_mode == "learned":
-                        # Repeating batch to condition on all depths
-                        # results in OOM!
-                        #
-                        layer_features = []
-                        for layer_id in range(num_feature_depth):
-                            t = torch.full((b, s), layer_id, device=device)
-
-                            with autocast_fn():
-                                with torch.inference_mode():
-                                    features, *_ = encoder(pixel_values, t, token_ids)
-                            features = einx.mean("b [s] d", features)
-                            layer_features.append(features)
-
-                        layer_features = torch.stack(layer_features, 1)
 
                     layer_features = layer_features.cpu().to(torch.float16).numpy()
                     labels = labels.numpy()
@@ -228,7 +196,7 @@ def validate(
         test_tar_urls = _embed_dataset(val_test_dataloader, "test-")
 
         classifier = MultiDepthClassifier(
-            1 if validation_depthsmart_mode == "lastlayer" else num_feature_depth,
+            1 if validation_extraction_mode == "lastlayer" else num_feature_depth,
             num_classes,
             num_features,
         ).to(device)

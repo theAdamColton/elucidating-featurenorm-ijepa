@@ -1,4 +1,3 @@
-import math
 from typing import Literal
 import torch
 from torch import nn
@@ -45,36 +44,6 @@ def compute_smooth_rank(x, eps=1e-7):
     log_p = torch.log(p + eps)
     entropy = torch.exp(-(p * log_p).sum())
     return entropy
-
-
-class TimestepEmbedder(nn.Module):
-    """
-    This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
-    """
-
-    def __init__(self, hidden_size=256, scale=1.0):
-        super().__init__()
-        downscale_freq_shift: float = 1
-        max_period: int = 10000
-        half_dim = hidden_size // 2
-        exponent = -math.log(max_period) * torch.arange(
-            start=0,
-            end=half_dim,
-            dtype=torch.float32,
-        )
-        exponent = exponent / (half_dim - downscale_freq_shift)
-
-        self.emb = nn.Parameter(torch.exp(exponent), requires_grad=False)
-        self.scale = scale
-
-    def forward(
-        self,
-        timesteps: torch.Tensor,
-    ):
-        emb = einx.multiply("..., d -> ... d", timesteps, self.emb)
-        emb = self.scale * emb
-        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-        return emb
 
 
 def get_1d_rotary_pos_embed(
@@ -137,25 +106,6 @@ class RopePosEmbedND(nn.Module):
         return freqs_cos, freqs_sin
 
 
-class AdaLayerNormShiftScale(nn.Module):
-    def __init__(
-        self,
-        hidden_size,
-        cond_size,
-    ):
-        super().__init__()
-        self.silu = nn.SiLU()
-        self.linear = nn.Linear(cond_size, hidden_size * 2)
-        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False)
-
-    def forward(self, x, emb):
-        emb = self.linear(self.silu(emb))
-        scale, shift = torch.chunk(emb, 2, dim=-1)
-        x = self.norm(x) * (1 + scale)
-        x = x + shift
-        return x
-
-
 class RunningBatchNorm(nn.Module):
     def __init__(self, hidden_size, beta=0.99, eps=1e-5):
         super().__init__()
@@ -212,9 +162,9 @@ class EncoderConfig:
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
     max_num_register_tokens: int = 8
-    norm_out_mode: Literal[
-        "disabled", "adanorm", "layernorm", "batchnorm", "dyntanh"
-    ] = "layernorm"
+    norm_out_mode: Literal["disabled", "layernorm", "batchnorm", "dyntanh"] = (
+        "layernorm"
+    )
     norm_elementwise_affine: bool = True
 
 
@@ -227,7 +177,6 @@ class Encoder(nn.Module):
         self.head_dim = config.block_config.attention_config.head_dim
 
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
-        self.temb = TimestepEmbedder(self.hidden_size)
 
         self.reg_emb = nn.Parameter(
             torch.empty(config.max_num_register_tokens, self.hidden_size)
@@ -266,17 +215,13 @@ class Encoder(nn.Module):
             self.norm_out = DynTanh(
                 self.hidden_size, self.config.norm_elementwise_affine
             )
-        elif config.norm_out_mode == "adanorm":
-            self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
         else:
             raise ValueError(config.norm_out_mode)
 
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor | None,
         token_ids: torch.Tensor,
-        return_target_hidden_states=False,
         return_all_layer_features=False,
     ):
         config = self.config
@@ -284,16 +229,9 @@ class Encoder(nn.Module):
         b, s, d = x.shape
         device, dtype = x.device, x.dtype
 
-        if t is None:
-            num_feature_depth = config.num_transformer_blocks + 1
-            t = torch.full((b, s), num_feature_depth - 1, device=device)
-
         if not torch.compiler.is_compiling():
             assert einx.matches("b s d", x, d=config.input_size)
-            assert einx.matches("b s", t, b=b, s=s)
             assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
-
-        assert not (return_target_hidden_states and return_all_layer_features)
 
         x = self.proj_in(x)
 
@@ -327,18 +265,7 @@ class Encoder(nn.Module):
             h=config.block_config.attention_config.num_attention_heads,
         )
 
-        temb = self.temb(t)
-
-        if return_target_hidden_states:
-            target_hidden_states = torch.zeros(
-                b, s, self.hidden_size, device=device, dtype=dtype
-            )
-
-            mask = t == 0
-            # basically masked fill
-            target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
-
-        elif return_all_layer_features:
+        if return_all_layer_features:
             all_layer_features = torch.empty(
                 config.num_transformer_blocks + 1,
                 b,
@@ -351,26 +278,17 @@ class Encoder(nn.Module):
             all_layer_features[0] = x
 
         for i, block in enumerate(self.blocks):
-            x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
+            x = block(x, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
-            if return_target_hidden_states:
-                mask = t == (i + 1)
-                target_hidden_states = target_hidden_states + x * mask.unsqueeze(-1)
-
-            elif return_all_layer_features:
+            if return_all_layer_features:
                 all_layer_features[i + 1] = x
 
         if config.norm_out_mode == "batchnorm":
             x = self.norm_out(x, sample_ids != MASK_SEQUENCE_ID)
-        elif config.norm_out_mode == "adanorm":
-            x = self.norm_out(x, temb)
         else:
             x = self.norm_out(x)
 
-        if return_target_hidden_states:
-            return x, target_hidden_states
-
-        elif return_all_layer_features:
+        if return_all_layer_features:
             # Do not normalize layer features
             return x, all_layer_features
 
@@ -396,9 +314,7 @@ class PredictorConfig:
 
     should_zero_ctx_register_tokens: bool = True
 
-    norm_out_mode: Literal["layernorm", "dyntanh", "adanormshiftscale"] = (
-        "adanormshiftscale"
-    )
+    norm_out_mode: Literal["layernorm", "dyntanh"] = "layernorm"
 
 
 class Predictor(nn.Module):
@@ -417,8 +333,6 @@ class Predictor(nn.Module):
             )
         else:
             self.proj_in = nn.Linear(config.input_size, self.hidden_size)
-
-        self.temb = TimestepEmbedder(self.hidden_size)
 
         self.reg_emb = nn.Parameter(
             torch.empty(config.max_num_register_tokens, self.hidden_size)
@@ -452,8 +366,6 @@ class Predictor(nn.Module):
             self.norm_out = nn.LayerNorm(self.hidden_size)
         elif config.norm_out_mode == "dyntanh":
             self.norm_out = DynTanh(self.hidden_size)
-        elif config.norm_out_mode == "adanormshiftscale":
-            self.norm_out = AdaLayerNormShiftScale(self.hidden_size, self.hidden_size)
         else:
             raise ValueError(config.norm_out_mode)
 
@@ -462,7 +374,6 @@ class Predictor(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
         token_ids: torch.Tensor,
         prediction_mask: torch.Tensor,
     ):
@@ -472,7 +383,6 @@ class Predictor(nn.Module):
 
         if not torch.compiler.is_compiling():
             assert einx.matches("b s d", x, d=config.input_size)
-            assert einx.matches("b s", t, b=b, s=s)
             assert einx.matches("b s four", token_ids, b=b, s=s, four=4)
 
         x = self.proj_in(x)
@@ -507,8 +417,6 @@ class Predictor(nn.Module):
 
         x = x + p_emb
 
-        temb = self.temb(t)
-
         attn_mask = einx.equal(
             "b s1, b s2 -> b h s1 s2",
             sample_ids,
@@ -522,25 +430,18 @@ class Predictor(nn.Module):
             rotary_embeds = None
 
         for block in self.blocks:
-            x = block(x, temb, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
+            x = block(x, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
 
-        if config.norm_out_mode == "adanormshiftscale":
-            x = self.norm_out(x, temb)
-        else:
-            x = self.norm_out(x)
-
+        x = self.norm_out(x)
         x = self.proj_out(x)
 
         return x
 
 
 @dataclass
-class IJEPADepthSmartConfig:
+class IJEPAConfig:
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig())
     predictor: PredictorConfig = field(default_factory=lambda: PredictorConfig())
-
-    depthsmart_mode: Literal["random-layers", "disabled", "noise"] = "random-layers"
-    num_denoiser_timesteps: int = 1000
 
     should_predict_register_tokens: bool = False
     should_attempt_mask_dropping: bool = True
@@ -555,8 +456,8 @@ class IJEPADepthSmartConfig:
     predictor_target_capacity: float = 0.125
 
 
-class IJEPADepthSmart(nn.Module):
-    def __init__(self, config=IJEPADepthSmartConfig()):
+class IJEPAModel(nn.Module):
+    def __init__(self, config=IJEPAConfig()):
         super().__init__()
         self.config = config
 
@@ -599,35 +500,8 @@ class IJEPADepthSmart(nn.Module):
         b, full_sequence_length, _ = patches.shape
         target_sequence_length = full_sequence_length - context_sequence_length
 
-        num_feature_depth = config.encoder.num_transformer_blocks + 1
-
-        if config.depthsmart_mode == "random-layers":
-            t = torch.randint(0, num_feature_depth, (b,), device=device)
-        elif config.depthsmart_mode == "disabled":
-            t = torch.full((b,), num_feature_depth - 1, device=device)
-        elif config.depthsmart_mode == "noise":
-            t = torch.randint(0, config.num_denoiser_timesteps, (b,), device=device)
-        else:
-            raise ValueError(config.depthsmart_mode)
-
-        context_timesteps = einx.rearrange("b -> b xs", t, xs=context_sequence_length)
-        full_timesteps = einx.rearrange("b -> b s", t, s=full_sequence_length)
-
         with torch.no_grad():
-            ema_encoder_outputs = self.ema_encoder(
-                patches,
-                full_timesteps,
-                token_ids,
-                return_target_hidden_states=config.depthsmart_mode == "random-layers",
-            )
-
-            if config.depthsmart_mode == "random-layers":
-                ema_encoder_outputs, target_hidden_states, *_ = ema_encoder_outputs
-                target_hidden_states = (
-                    ema_encoder_outputs * interp + target_hidden_states * (1 - interp)
-                )
-            else:
-                target_hidden_states, *_ = ema_encoder_outputs
+            target_hidden_states, *_ = self.ema_encoder(patches, token_ids)
 
         y_token_ids = token_ids
         if not config.should_predict_from_all_target:
@@ -675,7 +549,7 @@ class IJEPADepthSmart(nn.Module):
         # Forward student with only the context patches
         x = patches[:, :context_sequence_length]
         x_token_ids = token_ids[:, :context_sequence_length]
-        x, *_ = self.encoder(x, context_timesteps, x_token_ids)
+        x, *_ = self.encoder(x, x_token_ids)
 
         # Repeat tensors for predictor
         target_hidden_states = einx.rearrange(
@@ -744,9 +618,6 @@ class IJEPADepthSmart(nn.Module):
             1, expand_trailing(target_idx, y_token_ids)
         )
 
-        if config.depthsmart_mode == "noise":
-            raise NotImplementedError()
-
         # Prepare the inputs for the predictor
         x = torch.cat((ctx, targets), 1)
         combined_token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
@@ -761,9 +632,7 @@ class IJEPADepthSmart(nn.Module):
         )
         prediction_mask[:, num_ctx_tokens:] = 1
 
-        t = einx.rearrange("b -> (r b) ps", t, r=config.predictor_batch_repeat, ps=ps)
-
-        x = self.predictor(x, t, combined_token_ids, prediction_mask=prediction_mask)
+        x = self.predictor(x, combined_token_ids, prediction_mask=prediction_mask)
         predictions = x[:, num_ctx_tokens:]
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")

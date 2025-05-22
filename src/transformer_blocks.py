@@ -290,25 +290,12 @@ class DiffMoeMLP(nn.Module):
         return x
 
 
-class AdaLayerNormShift(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.silu = nn.SiLU()
-        self.linear = nn.Linear(hidden_size, hidden_size)
-        self.norm = nn.LayerNorm(hidden_size)
-
-    def forward(self, x, emb):
-        shift = self.linear(self.silu(emb))
-        x = self.norm(x) + shift
-        return x
-
-
 @dataclass
 class TransformerBlockConfig:
     mlp_config: DiffMoeMLPConfig = field(default_factory=lambda: DiffMoeMLPConfig())
     attention_config: AttentionConfig = field(default_factory=lambda: AttentionConfig())
 
-    norm_mode: Literal["layernorm", "dyntanh", "adanormshift"] = "adanormshift"
+    norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
 
 
 class TransformerBlock(nn.Module):
@@ -322,19 +309,14 @@ class TransformerBlock(nn.Module):
             self.norm1 = nn.LayerNorm(self.embed_dim)
         elif config.norm_mode == "dyntanh":
             self.norm1 = DynTanh(self.embed_dim)
-        elif config.norm_mode == "adanormshift":
-            self.norm1 = AdaLayerNormShift(self.embed_dim)
         else:
             raise ValueError(config.norm_mode)
 
         self.attention = Attention(self.config.attention_config)
         self.mlp = DiffMoeMLP(self.config.mlp_config)
 
-    def forward(self, x, t, block_mask=None, attn_mask=None, rotary_embeds=None):
-        if self.config.norm_mode == "adanormshift":
-            norm_x = self.norm1(x, t)
-        else:
-            norm_x = self.norm1(x)
+    def forward(self, x, block_mask=None, attn_mask=None, rotary_embeds=None):
+        norm_x = self.norm1(x)
 
         x = (
             x

@@ -19,7 +19,7 @@ import wandb
 import tensorset as ts
 
 from src.dataset import get_context_target_dataloader, MASK_SEQUENCE_ID
-from src.model import IJEPADepthSmartConfig, IJEPADepthSmart
+from src.model import IJEPAConfig, IJEPAModel
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
 from src.visualize_embeddings import features_to_rgb
@@ -80,7 +80,7 @@ class MainConfig:
     # Extract features from the 4th to last layer of the encoder to perform monocular depth estimation
     validation_monocular_depth_feature_depth: int = -4
     validation_probe_batch_size: int = 2048
-    validation_depthsmart_mode: Literal["learned", "extract-layers", "lastlayer"] = (
+    validation_extraction_mode: Literal["extract-layers", "lastlayer"] = (
         "extract-layers"
     )
 
@@ -122,9 +122,7 @@ class MainConfig:
     max_context_capacity: float = 0.95
     absolute_max_context_capacity: float = 0.5
 
-    model: IJEPADepthSmartConfig = field(
-        default_factory=lambda: IJEPADepthSmartConfig()
-    )
+    model: IJEPAConfig = field(default_factory=lambda: IJEPAConfig())
 
     mode: Literal[
         "make-viz",
@@ -179,7 +177,7 @@ def main(conf: MainConfig = MainConfig()):
 
     training_state = dict(global_step=0, epoch=0, num_total_samples=0)
 
-    model = IJEPADepthSmart(conf.model).to(device)
+    model = IJEPAModel(conf.model).to(device)
     trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
 
     optimizer = torch.optim.AdamW(
@@ -307,7 +305,7 @@ def main(conf: MainConfig = MainConfig()):
             validation_probe_lr=conf.validation_probe_lr,
             validation_probe_batch_size=conf.validation_probe_batch_size,
             validation_train_epochs=conf.validation_train_epochs,
-            validation_depthsmart_mode=conf.validation_depthsmart_mode,
+            validation_extraction_mode=conf.validation_extraction_mode,
             num_register_tokens=conf.num_register_tokens,
         )
         print("ACCURACIES", accuracies)
@@ -563,9 +561,7 @@ def main(conf: MainConfig = MainConfig()):
 
         with autocast_fn():
             with torch.inference_mode():
-                embeddings, *_ = model.ema_encoder(
-                    x=y_patches, t=None, token_ids=y_token_ids
-                )
+                embeddings, *_ = model.ema_encoder(x=y_patches, token_ids=y_token_ids)
 
         *_, hidden_d = embeddings.shape
 
@@ -830,7 +826,7 @@ def main(conf: MainConfig = MainConfig()):
                     validation_probe_lr=conf.validation_probe_lr,
                     validation_probe_batch_size=conf.validation_probe_batch_size,
                     validation_train_epochs=conf.validation_train_epochs,
-                    validation_depthsmart_mode=conf.validation_depthsmart_mode,
+                    validation_extraction_mode=conf.validation_extraction_mode,
                     num_register_tokens=conf.num_register_tokens,
                 )
 

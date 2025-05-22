@@ -3,22 +3,6 @@ import torch
 import tensorset as ts
 
 
-def pad_tensorsequence_to_length(
-    sequence: list[ts.TensorSet],
-    sequence_length: int,
-    pad_value_dict=dict(),
-) -> ts.TensorSet:
-    sequence = ts.cat(sequence, 0)
-
-    # if the sequence length is too short, pads
-    pad_amt = sequence_length - sequence.size(0)
-    needs_pad = pad_amt > 0
-    if needs_pad:
-        sequence = sequence.pad(pad_amt, 0, value_dict=pad_value_dict)
-
-    return sequence
-
-
 class PairPacker:
     """
     A Packer that can pack sequences pairs into batches.

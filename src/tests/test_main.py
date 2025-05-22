@@ -1,7 +1,7 @@
 import unittest
 
 
-from src.model import EncoderConfig, IJEPADepthSmartConfig, PredictorConfig
+from src.model import EncoderConfig, IJEPAConfig, PredictorConfig
 from main import MainConfig, main
 from src.transformer_blocks import (
     AttentionConfig,
@@ -21,9 +21,7 @@ class TestMain(unittest.TestCase):
         predictor_conf = PredictorConfig(
             input_size=16, num_transformer_blocks=1, block_config=block_conf
         )
-        model_conf = IJEPADepthSmartConfig(
-            encoder=encoder_conf, predictor=predictor_conf
-        )
+        model_conf = IJEPAConfig(encoder=encoder_conf, predictor=predictor_conf)
         conf = MainConfig(
             should_compile=False,
             device="cpu",
