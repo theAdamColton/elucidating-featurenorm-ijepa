@@ -541,8 +541,8 @@ def _packed_x_y(
      which is a list of dicts, one for each batch element, mapping ids to sample metadata.
     """
     packer = PairPacker(
-        pack_size_x,
-        pack_size_y,
+        pack_size_x=pack_size_x,
+        pack_size_y=pack_size_y,
         batch_size=batch_size,
         pad_value_dict=pad_value_dict,
     )
@@ -555,14 +555,12 @@ def _packed_x_y(
         _addin_sample_ids(y_patches, id)
 
         # Yields once or zero times
-        packer.append(x_patches, y_patches, id, sample)
-
-        if packer.can_pop_batch():
-            x_batch, y_batch, metadata_batch = packer.pop_batch()
-            packed_batch = ts.cat((x_batch, y_batch), 1)
-            yield {"packed_batch": packed_batch, "packed_metadata": metadata_batch}
-        # reset id to avoid overflow
-        id = -1
+        for packed_batch, packed_metadata in packer.append(
+            x_patches, y_patches, id, sample
+        ):
+            yield {"packed_batch": packed_batch, "packed_metadata": packed_metadata}
+            # reset id to avoid overflow
+            id = -1
 
         id += 1
 

@@ -267,8 +267,7 @@ class Trainer:
 
     def train(self):
         conf_d = asdict(self.conf)
-        trainable_params = (p for p in self.model.parameters() if p.requires_grad)
-        conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
+        conf_d["num_params"] = sum(p.nelement() for p in self.trainable_params)
 
         wandb.init(
             project="ijepa-depthsmart",
