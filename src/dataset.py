@@ -1,5 +1,7 @@
 import math
+from dataclasses import dataclass
 import random
+
 import torch
 import webdataset as wds
 import tensorset as ts
@@ -595,23 +597,27 @@ class PatchesToTensorSet:
         return row
 
 
+@dataclass
+class ContextTargetDatasetConfig:
+    packer_batch_size: int = 64
+    max_side_length: int = 256
+    min_side_length: int = 64
+    mask_window_size: int = 2
+    min_context_capacity: float = 0.05
+    max_context_capacity: float = 0.95
+    absolute_max_context_capacity: float = 0.5
+
+
 def get_context_target_dataloader(
+    config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
     dataset_pattern: str = "",
     dataset_length: int = None,
     seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
-    label_column_name: str | None = None,
     batch_size: int = 256,
-    packer_batch_size: int = 64,
-    max_side_length: int = 256,
-    min_side_length: int = 64,
     patch_size: int = 16,
-    mask_window_size: int = 2,
     num_register_tokens: int = 8,
-    min_context_capacity: float = 0.05,
-    max_context_capacity: float = 0.95,
-    absolute_max_context_capacity: float = 0.5,
     num_workers: int = 0,
 ):
     """
@@ -619,6 +625,14 @@ def get_context_target_dataloader(
     Randomly resizes, patches, and splits patches into context and target.
     Then packs context-target pairs, returning packed batches
     """
+
+    packer_batch_size = config.packer_batch_size
+    max_side_length = config.max_side_length
+    min_side_length = config.min_side_length
+    mask_window_size = config.mask_window_size
+    min_context_capacity = config.min_context_capacity
+    max_context_capacity = config.max_context_capacity
+    absolute_max_context_capacity = config.absolute_max_context_capacity
 
     assert batch_size % packer_batch_size == 0
 
@@ -687,7 +701,6 @@ def get_context_target_dataloader(
             seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
-            label_column_name=label_column_name,
         )
         .select(ImageSizeFilter(min_side_length))
         .map(
@@ -755,3 +768,19 @@ def get_context_target_dataloader(
     )
 
     return dataloader, packer_context_sequence_length, max_y_sequence_length
+
+
+def get_lidar_batches(
+    config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
+    dataset_pattern: str = "",
+    seed: int | None = None,
+    image_column_name: str = "jpg",
+    batch_size: int = 256,
+    num_unique_images: int = 1000,
+    num_repeat: int = 50,
+):
+    """
+    similar to get_context_target_dataset,
+    but keeps track of the unique ID of each image,
+    and repeats images a large number of times ~50
+    """

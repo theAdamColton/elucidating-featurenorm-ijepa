@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 
 from src.model import IJEPAConfig
+from src.dataset import ContextTargetDatasetConfig
 
 
 @dataclass
@@ -25,9 +26,9 @@ class MainConfig:
     validate_every_num_epochs: int = 10
     max_num_save_checkpoints: int = 2
 
-    context_target_max_side_length: int = 256
-    context_target_min_side_length: int = 64
-    context_target_mask_window_size: int = 2
+    context_target_dataset: ContextTargetDatasetConfig = field(
+        default_factory=lambda: ContextTargetDatasetConfig()
+    )
 
     validation_probe_lr: float = 1e-3
     validation_monocular_depth_lr: float = 5e-4
@@ -75,9 +76,6 @@ class MainConfig:
     depth_column_name: str = "depth.npy"
 
     num_register_tokens: int = 0
-    min_context_capacity: float = 0.05
-    max_context_capacity: float = 0.95
-    absolute_max_context_capacity: float = 0.5
 
     model: IJEPAConfig = field(default_factory=lambda: IJEPAConfig())
 
