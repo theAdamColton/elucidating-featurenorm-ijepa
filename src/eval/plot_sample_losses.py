@@ -29,7 +29,16 @@ def prepare_context_target_batch(batch, device, dtype):
     return patches, token_ids
 
 
-def plot_sample_losses(dataloader, context_sequence_length, model, device, dtype, patch_size, num_image_channels, autocast_fn):
+def plot_sample_losses(
+    dataloader,
+    context_sequence_length,
+    model,
+    device,
+    dtype,
+    patch_size,
+    num_image_channels,
+    autocast_fn,
+):
     """
     Plot the distribution of losses for each sample in a batch.
     """
@@ -78,9 +87,7 @@ def plot_sample_losses(dataloader, context_sequence_length, model, device, dtype
         b, s, d = all_patches.shape
         indices = torch.rand(b, s).argsort(dim=-1)
         all_patches = einx.get_at("b [s] d, b n -> b n d", all_patches, indices)
-        all_token_ids = einx.get_at(
-            "b [s] nd, b n -> b n nd", all_token_ids, indices
-        )
+        all_token_ids = einx.get_at("b [s] nd, b n -> b n nd", all_token_ids, indices)
 
         x_patches, y_patches = (
             all_patches[:, :x_patches_length],
@@ -108,14 +115,12 @@ def plot_sample_losses(dataloader, context_sequence_length, model, device, dtype
         # from the predictor
         tokenwise_loss = result_dict["tokenwise_loss"].cpu().float()
         # target sequence_ids is batch repeated sequence ids fed to the predictor
-        target_sequence_ids = result_dict["predictor_target_token_ids"][
-            ..., 0
-        ].cpu()
+        target_sequence_ids = result_dict["predictor_target_token_ids"][..., 0].cpu()
 
         tokenwise_loss = einx.mean("rb ys [d]", tokenwise_loss)
 
         # Compute the mean loss for each unique sample across the batch
-        for i in range(model.conf.predictor_batch_repeat):
+        for i in range(model.config.predictor_batch_repeat):
             for j in range(b):
                 batch_index = i * b + j
                 sequence_ids = target_sequence_ids[batch_index]

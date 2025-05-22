@@ -19,6 +19,8 @@ class Trainer:
     def __init__(
         self,
         model: IJEPAModel,
+        optimizer: torch.optim.Optimizer,
+        training_state: dict,
         conf: MainConfig,
         dataloader,
         context_sequence_length: int,
@@ -33,38 +35,17 @@ class Trainer:
         self.target_sequence_length = target_sequence_length
         self.device = device
         self.dtype = dtype
-        self.training_state = dict(global_step=0, epoch=0, num_total_samples=0)
+        self.training_state = training_state
         self.patch_size = conf.patch_size
 
-        self.trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
-
-        self.optimizer = torch.optim.AdamW(
-            self.trainable_params,
-            lr=conf.start_lr,
-            betas=(0.9, 0.95),
-            weight_decay=0.05,
-        )
+        self.optimizer = optimizer
 
         self.checkpoint_folder_path = (
             Path("checkpoints") / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        if conf.resume_path is not None:
-            self._load_checkpoint()
-
         if conf.should_compile:
             self.model = torch.compile(self.model)
-
-    def _load_checkpoint(self):
-        d = torch.load(
-            self.conf.resume_path, map_location=self.device, weights_only=False
-        )
-        self.model.load_state_dict(d["model"], strict=False)
-        self.training_state.update(d["training_state"])
-        try:
-            self.optimizer.load_state_dict(d["optimizer"])
-        except Exception as e:
-            print("Could not load optimizer state dict! Error:", e)
 
     @contextmanager
     def autocast_fn(self):

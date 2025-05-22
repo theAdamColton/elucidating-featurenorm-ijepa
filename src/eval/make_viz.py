@@ -1,7 +1,6 @@
 import torch
 import einx
 import torchvision
-from pathlib import Path
 
 from src.dataset import MASK_SEQUENCE_ID
 from src.utils import get_viz_output_path
@@ -27,9 +26,7 @@ def make_viz(dataloader, context_sequence_length, patch_size, num_image_channels
         packed_batch.iloc[:, :context_sequence_length],
         packed_batch.iloc[:, context_sequence_length:],
     )
-    x_patches["patches"] = einx.multiply(
-        "... d, d", x_patches["patches"], patch_border
-    )
+    x_patches["patches"] = einx.multiply("... d, d", x_patches["patches"], patch_border)
 
     b = x_patches.size(0)
     for i in range(b):
@@ -68,9 +65,7 @@ def make_viz(dataloader, context_sequence_length, patch_size, num_image_channels
             ph, pw = (max_ph_pw - min_ph_pw + 1).tolist()
 
             input_size = x_patches["patches"].shape[-1]
-            image = torch.zeros(
-                ph, pw, input_size, dtype=torch.uint8, device=device
-            )
+            image = torch.zeros(ph, pw, input_size, dtype=torch.uint8, device=device)
 
             for k in range(y_sample.size(0)):
                 token = y_sample.iloc[k]

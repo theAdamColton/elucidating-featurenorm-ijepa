@@ -11,9 +11,9 @@ from src.model import IJEPAModel
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
 from src.trainer import Trainer
-from src.scripts.make_viz import make_viz
-from src.scripts.plot_sample_losses import plot_sample_losses
-from src.scripts.visualize_embeddings import visualize_embeddings
+from src.eval.make_viz import make_viz
+from src.eval.plot_sample_losses import plot_sample_losses
+from src.eval.visualize_embeddings import visualize_embeddings
 
 
 def main(conf: MainConfig = MainConfig()):
@@ -52,6 +52,17 @@ def main(conf: MainConfig = MainConfig()):
 
     model = IJEPAModel(conf.model).to(device)
 
+    trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
+
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=conf.start_lr,
+        betas=(0.9, 0.95),
+        weight_decay=0.05,
+    )
+
+    training_state = dict(global_step=0, epoch=0, num_total_samples=0)
+
     @contextmanager
     def autocast_fn():
         with torch.autocast(device.type, dtype):
@@ -62,6 +73,8 @@ def main(conf: MainConfig = MainConfig()):
         def _load():
             d = torch.load(conf.resume_path, map_location=device, weights_only=False)
             model.load_state_dict(d["model"], strict=False)
+            optimizer.load_state_dict(d["optimizer"])
+            training_state.update(d["training_state"])
 
         _load()
 
@@ -141,6 +154,8 @@ def main(conf: MainConfig = MainConfig()):
     elif conf.mode == "train":
         trainer = Trainer(
             model=model,
+            optimizer=optimizer,
+            training_state=training_state,
             conf=conf,
             dataloader=dataloader,
             context_sequence_length=context_sequence_length,
