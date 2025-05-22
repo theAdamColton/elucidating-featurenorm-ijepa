@@ -1,3 +1,4 @@
+import time
 import gc
 from contextlib import contextmanager
 from datetime import datetime
@@ -112,7 +113,7 @@ class Trainer:
         with open(yaml_save_path, "w") as f:
             yaml.dump(conf_dict, f)
 
-    def train_step(self, batch):
+    def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
 
         interp = 0
@@ -171,6 +172,9 @@ class Trainer:
                 ids.remove(MASK_SEQUENCE_ID)
             num_samples_in_batch += len(ids)
 
+        elapsed = time.time() - start_time
+        samples_per_second = num_samples_in_batch / elapsed
+
         if should_log:
             mask_rate = (token_ids[..., 0] == MASK_SEQUENCE_ID).float().mean()
 
@@ -185,6 +189,8 @@ class Trainer:
                     mask_rate=mask_rate,
                     interp=interp,
                     num_total_samples=self.training_state["num_total_samples"],
+                    samples_per_second=samples_per_second,
+                    step_time=elapsed,
                 ),
                 step=self.training_state["global_step"],
             )
@@ -196,8 +202,9 @@ class Trainer:
 
     def train_one_epoch(self, dataloader_stream, prog_bar):
         while True:
+            start_time = time.time()
             batch = next(dataloader_stream)
-            loss = self.train_step(batch)
+            loss = self.train_step(batch, start_time)
 
             prog_bar.update(1)
             prog_bar.set_description(f"{self.training_state} loss {round(loss, 3)}")
