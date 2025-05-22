@@ -3,7 +3,7 @@ conf:
   dtype: bfloat16
   device: cuda
   batch_size: 256
-  num_workers: 0
+  num_workers: 4
   ema_beta_start: 0.85
   ema_beta: 0.996
   ema_beta_warmup_steps: 500
@@ -44,7 +44,7 @@ conf:
           should_use_qk_norm: false
         norm_mode: dyntanh
       norm_out_mode: dyntanh
-    predictor_batch_repeat: 4
+    predictor_batch_repeat: 8
     depthsmart_mode: disabled
     target_norm_mode: disabled
     should_predict_from_all_target: false

@@ -34,22 +34,6 @@ def get_tensorset_collation_fn(mode="cat"):
     return tensorset_collation_fn
 
 
-def _unbatched_tensorset(data):
-    for sample in data:
-        assert isinstance(sample, (tuple, list))
-
-        for x in sample:
-            assert isinstance(x, ts.TensorSet)
-
-        b = sample[0].size(0)
-
-        for i in range(b):
-            yield tuple(x.iloc[i] for x in sample)
-
-
-unbatched_tensorset = wds.pipelinefilter(_unbatched_tensorset)
-
-
 def _get_image_dataset(
     dataset_pattern: str = "",
     is_training: bool = True,
@@ -112,7 +96,7 @@ def get_pil_center_crop_box(h, w):
     returns a tuple of (int,int,int,int)
     indicating (start_width_idx, start_height_idx, end_width_idx, end_height_idx)
     """
-    crop_size = min(h, h)
+    crop_size = min(h, w)
     if h > w:
         amount_to_crop = h - crop_size
         box = (0, amount_to_crop // 2, w, amount_to_crop // 2 + crop_size)
