@@ -534,7 +534,7 @@ class ContextTargetSplitter:
 def _get_random_sample_id(rng):
     sample_id = MASK_SAMPLE_ID
     while sample_id == MASK_SAMPLE_ID:
-        sample_id = rng.randint(MIN_SAMPLE_ID, MAX_SAMPLE_ID - 1)
+        sample_id = rng.randint(MIN_SAMPLE_ID, MAX_SAMPLE_ID)
     return sample_id
 
 
@@ -544,6 +544,9 @@ def _assign_sample_ids(data, rng=None):
 
     for sample in data:
         sample_id = _get_random_sample_id(rng)
+
+        if rng.random() < 0.05:
+            sample_id = 0
 
         sample["sample_id"] = sample_id
         yield sample
