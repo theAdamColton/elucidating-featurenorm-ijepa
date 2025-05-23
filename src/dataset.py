@@ -634,40 +634,43 @@ class ContextTargetDatasetConfig:
     max_side_length: int = 256
     min_side_length: int = 64
     mask_window_size: int = 2
-    min_context_capacity: float = 0.05
-    max_context_capacity: float = 0.95
+    min_context_capacity: float = 0.25
+    max_context_capacity: float = 0.5
     absolute_max_context_capacity: float = 0.5
 
     def __post_init__(self):
+        assert self.absolute_max_context_capacity <= self.max_context_capacity
+        assert self.min_context_capacity <= self.max_context_capacity
+        assert self.max_side_length >= self.min_side_length
+
         # Resize images to this multiple
         self.resize_multiple_of = self.patch_size * self.mask_window_size
 
-        max_sequence_length = (self.max_side_length // self.patch_size) ** 2
+        max_num_patches = (self.max_side_length // self.patch_size) ** 2
         # Absolute maximum number of pixels for resized images
-        self.max_num_pixels = max_sequence_length * self.patch_size**2
+        self.max_num_pixels = max_num_patches * self.patch_size**2
 
         # For an input of max_sequence_length,
         # the context recieves a random sequence length between
         # min_context_sequence_length and max_context_sequence_length.
         # This means that there are a maximum of (max_sequence_length - min_context_sequence_length) tokens
         # that are exclusive to the target.
-        self.max_context_sequence_length = int(
-            round(max_sequence_length * self.absolute_max_context_capacity)
+        self.max_num_context_patches = int(
+            round(max_num_patches * self.absolute_max_context_capacity)
         )
 
         min_context_windows = int(
-            (max_sequence_length // self.mask_window_size**2)
-            * self.min_context_capacity
+            (max_num_patches // self.mask_window_size**2) * self.min_context_capacity
         )
-        min_context_sequence_length = min_context_windows * self.mask_window_size**2
+        min_num_context_patches = min_context_windows * self.mask_window_size**2
 
-        self.max_y_sequence_length = max_sequence_length - min_context_sequence_length
+        self.max_num_target_patches = max_num_patches - min_num_context_patches
 
         # Register tokens are added to the context after being patched;
         # the context sequence length grows by num_register_tokens just before being packed
         # This is the final context sequence length of batches returned by the dataloader
         self.packer_context_sequence_length = (
-            self.max_context_sequence_length + self.num_register_tokens
+            self.max_num_context_patches + self.num_register_tokens
         )
 
 
@@ -691,7 +694,7 @@ def get_context_target_dataloader(
 
     print(
         f"Creating context target dataset: packer_context_sequence_length: {config.packer_context_sequence_length} \
-          teacher sequence length {config.packer_context_sequence_length + config.max_y_sequence_length}"
+          teacher sequence length {config.packer_context_sequence_length + config.max_num_target_patches}"
     )
 
     tensorset_pad_value_dict = {
@@ -740,7 +743,7 @@ def get_context_target_dataloader(
                 window_size=config.mask_window_size,
                 min_context_capacity=config.min_context_capacity,
                 max_context_capacity=config.max_context_capacity,
-                max_context_sequence_length=config.max_context_sequence_length,
+                max_context_sequence_length=config.max_num_context_patches,
                 rng=splitter_rng,
             )
         )
@@ -776,7 +779,7 @@ def get_context_target_dataloader(
         .compose(
             packed_x_y(
                 config.packer_context_sequence_length,
-                config.max_y_sequence_length,
+                config.max_num_target_patches,
                 config.packer_batch_size,
                 pad_value_dict=tensorset_pad_value_dict,
             )
