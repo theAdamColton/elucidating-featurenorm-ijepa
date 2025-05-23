@@ -8,13 +8,13 @@ conf:
   batch_size: 256
   num_workers: 4
 
-  ema_beta_start: 0.995
+  ema_beta_start: 0.996
   ema_beta: 0.9999
   ema_beta_warmup_steps: 150000
 
   start_lr: 1e-4
   lr: 1e-3
-  num_warmup_steps: 10000
+  num_warmup_steps: 30000
 
   interp_warmup_steps: 30000
 

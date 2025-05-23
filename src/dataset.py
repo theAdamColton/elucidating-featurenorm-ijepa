@@ -545,9 +545,6 @@ def _assign_sample_ids(data, rng=None):
     for sample in data:
         sample_id = _get_random_sample_id(rng)
 
-        if rng.random() < 0.05:
-            sample_id = 0
-
         sample["sample_id"] = sample_id
         yield sample
 
@@ -804,10 +801,6 @@ def get_context_target_dataloader(
     )
 
     return dataloader
-
-
-def _add_unique_ids(data):
-    pass
 
 
 def _repeat_samples(data, amount):
