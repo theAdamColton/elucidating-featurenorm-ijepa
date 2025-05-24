@@ -286,9 +286,9 @@ class DummySampleIDAdder:
 
         s, _ = token_ids.shape
 
-        sequence_ids = torch.zeros(s, 1, dtype=token_ids.dtype, device=token_ids.device)
+        sample_ids = torch.zeros(s, 1, dtype=token_ids.dtype, device=token_ids.device)
 
-        token_ids = torch.cat((sequence_ids, token_ids), 1)
+        token_ids = torch.cat((sample_ids, token_ids), 1)
 
         row["token_ids"] = token_ids
 
@@ -568,7 +568,7 @@ class AddSampleIdsToTensorSet:
             dtype=torch.long,
             device=x.all_columns[0].device,
         )
-        x.named_columns["sequence_ids"] = ids
+        x.named_columns["sample_ids"] = ids
 
         row[self.k] = x
         return row
@@ -724,7 +724,7 @@ def get_context_target_dataloader(
     tensorset_pad_value_dict = {
         "position_ids": 0,
         "patches": 0,
-        "sequence_ids": MASK_SAMPLE_ID,
+        "sample_ids": MASK_SAMPLE_ID,
     }
 
     if seed is not None:

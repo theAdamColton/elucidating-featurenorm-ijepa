@@ -14,9 +14,9 @@ def prepare_context_target_batch(batch, device, dtype):
         raise ValueError()
 
     position_ids = packed_batch.named_columns.pop("position_ids")
-    sequence_ids = packed_batch.named_columns.pop("sequence_ids")
-    # Token ids contains along the channel dim (sequence_ids, register id, height idx, width idx)
-    token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
+    sample_ids = packed_batch.named_columns.pop("sample_ids")
+    # Token ids contains along the channel dim (sample_ids, register id, height idx, width idx)
+    token_ids = torch.cat((sample_ids.unsqueeze(-1), position_ids), -1)
 
     patches = packed_batch.named_columns.pop("patches")
 
@@ -114,8 +114,8 @@ def plot_sample_losses(
         # tokenwise loss is the batch repeated loss
         # from the predictor
         tokenwise_loss = result_dict["tokenwise_loss"].cpu().float()
-        # target sequence_ids is batch repeated sequence ids fed to the predictor
-        target_sequence_ids = result_dict["predictor_target_token_ids"][..., 0].cpu()
+        # target sample_ids is batch repeated sequence ids fed to the predictor
+        target_sample_ids = result_dict["predictor_target_token_ids"][..., 0].cpu()
 
         tokenwise_loss = einx.mean("rb ys [d]", tokenwise_loss)
 
@@ -123,9 +123,9 @@ def plot_sample_losses(
         for i in range(model.config.predictor_batch_repeat):
             for j in range(b):
                 batch_index = i * b + j
-                sequence_ids = target_sequence_ids[batch_index]
+                sample_ids = target_sample_ids[batch_index]
                 for k, sample_id in enumerate(batch_unique_sample_ids[j]):
-                    mask = sequence_ids == sample_id
+                    mask = sample_ids == sample_id
                     if not mask.any():
                         continue
 

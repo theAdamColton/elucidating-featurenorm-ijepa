@@ -77,11 +77,11 @@ class TokenMerger:
         >>> x_merged2 = tm2(x_merged1) # shape: (1, 8, 2)
         >>> rec_x = tm2.unmerge(x_merged2) # shape: (1, 16, 2)
 
-    TokenMerger also accepts sequence_ids and mask_id as optional parameters.
+    TokenMerger also accepts sample_ids and mask_id as optional parameters.
     These parameters are meant for specifying the distinct datapoints when using sequence packing.
     Each sequence in the batch can contain more than one datapoint. There might also be padding.
     Per sequence, each datapoint is identified using a unique integer id.
-    For example, sequence_ids[0] could equal [0, 0, 0, 1, 1,  -100]. sequence_ids[0] has 2
+    For example, sample_ids[0] could equal [0, 0, 0, 1, 1,  -100]. sample_ids[0] has 2
     datapoints, identified by 0 and 1. Datapoint 0 has 3 tokens, datapoint 1 has 2 tokens. There
     is also one padding token.
     TokenMerger will not merge tokens from different datapoints. Datapoint 0 and datapoint 1 will
@@ -90,7 +90,7 @@ class TokenMerger:
 
     @torch.no_grad()
     def __init__(
-        self, k: torch.Tensor, r: int, adm=None, sequence_ids=None, mask_id=-100
+        self, k: torch.Tensor, r: int, adm=None, sample_ids=None, mask_id=-100
     ):
         """
         k: token embeddings, can be the key values from attention.
@@ -106,7 +106,7 @@ class TokenMerger:
             token 0, before being merged by this TokenMerger, is composed of the
             tokens 3 and 4 (counting from zero).
 
-        sequence_ids: LongTensor of shape (b, sequence_length)
+        sample_ids: LongTensor of shape (b, sequence_length)
             Uniquely identifies each element of each sequence.
             Protects tokens that are not part of the same instance from being merged.
             Optional
@@ -128,8 +128,8 @@ class TokenMerger:
         scores = einx.dot("b s1 z, b s2 z -> b s1 s2", a, b)
 
         # masks out scores
-        if sequence_ids is not None:
-            a_ids, b_ids = sequence_ids[:, ::2], sequence_ids[:, 1::2]
+        if sample_ids is not None:
+            a_ids, b_ids = sample_ids[:, ::2], sample_ids[:, 1::2]
             attention_mask = a_ids.unsqueeze(2) == b_ids.unsqueeze(1)
             # scores where ids are not equal should be -inf
             scores.masked_fill_(~attention_mask, torch.finfo(scores.dtype).min)
@@ -152,7 +152,7 @@ class TokenMerger:
         self.r = r
         self.mask_id = mask_id
 
-        if sequence_ids is not None:
+        if sample_ids is not None:
             # Merges ids, but doesn't do any reduction on merged ids,
             # Simply takes the items from set b.
             # The reduction is uncessary because each set of merged ids is assumed to be identical,

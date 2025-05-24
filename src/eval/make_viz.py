@@ -32,17 +32,17 @@ def make_viz(dataloader, context_sequence_length, patch_size, num_image_channels
     for i in range(b):
         x_seq = x_patches.iloc[i]
         y_seq = y_patches.iloc[i]
-        sequence_ids = x_seq["sequence_ids"].unique().tolist()
-        for j in sequence_ids:
+        sample_ids = x_seq["sample_ids"].unique().tolist()
+        for j in sample_ids:
             if j == MASK_SAMPLE_ID:
                 continue
 
             device = x_seq["patches"].device
 
-            x_sample_mask = (x_seq["sequence_ids"] == j) & (
+            x_sample_mask = (x_seq["sample_ids"] == j) & (
                 x_seq["position_ids"][..., 0] == MASK_SAMPLE_ID
             )
-            y_sample_mask = (y_seq["sequence_ids"] == j) & (
+            y_sample_mask = (y_seq["sample_ids"] == j) & (
                 y_seq["position_ids"][..., 0] == MASK_SAMPLE_ID
             )
 

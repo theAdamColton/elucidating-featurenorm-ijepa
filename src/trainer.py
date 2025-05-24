@@ -55,9 +55,9 @@ class Trainer:
             raise ValueError()
 
         position_ids = packed_batch.named_columns.pop("position_ids")
-        sequence_ids = packed_batch.named_columns.pop("sequence_ids")
-        # Token ids contains along the channel dim (sequence_ids, register id, height idx, width idx)
-        token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
+        sample_ids = packed_batch.named_columns.pop("sample_ids")
+        # Token ids contains along the channel dim (sample_ids, register id, height idx, width idx)
+        token_ids = torch.cat((sample_ids.unsqueeze(-1), position_ids), -1)
 
         patches = packed_batch.named_columns.pop("patches")
 

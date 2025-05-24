@@ -23,9 +23,9 @@ def prepare_context_target_batch(batch, device, dtype):
         raise ValueError()
 
     position_ids = packed_batch.named_columns.pop("position_ids")
-    sequence_ids = packed_batch.named_columns.pop("sequence_ids")
-    # Token ids contains along the channel dim (sequence_ids, register id, height idx, width idx)
-    token_ids = torch.cat((sequence_ids.unsqueeze(-1), position_ids), -1)
+    sample_ids = packed_batch.named_columns.pop("sample_ids")
+    # Token ids contains along the channel dim (sample_ids, register id, height idx, width idx)
+    token_ids = torch.cat((sample_ids.unsqueeze(-1), position_ids), -1)
 
     patches = packed_batch.named_columns.pop("patches")
 
@@ -175,15 +175,15 @@ def visualize_embeddings(
     viz_output_path = get_viz_output_path()
 
     for i in range(b):
-        sequence_ids, position_ids = y_token_ids[i, :, 0], y_token_ids[i, :, -2:]
+        sample_ids, position_ids = y_token_ids[i, :, 0], y_token_ids[i, :, -2:]
 
-        unique_sequence_ids = sequence_ids.unique().tolist()
-        unique_sequence_ids.sort()
+        unique_sample_ids = sample_ids.unique().tolist()
+        unique_sample_ids.sort()
 
-        if MASK_SAMPLE_ID in unique_sequence_ids:
-            unique_sequence_ids.remove(MASK_SAMPLE_ID)
-        for sequence_id in unique_sequence_ids:
-            sequence_mask = sequence_ids == sequence_id
+        if MASK_SAMPLE_ID in unique_sample_ids:
+            unique_sample_ids.remove(MASK_SAMPLE_ID)
+        for sequence_id in unique_sample_ids:
+            sequence_mask = sample_ids == sequence_id
 
             sample_position_ids = position_ids[sequence_mask]
             sample_tokens = y_patches[i][sequence_mask]

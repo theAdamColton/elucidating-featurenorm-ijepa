@@ -648,8 +648,8 @@ class IJEPAModel(nn.Module):
         # Should these registers be upweighted? Or excluded from loss
 
         # Exclude masked tokens from the loss
-        target_sequence_ids = combined_token_ids[:, num_ctx_tokens:, 0]
-        is_target_mask = target_sequence_ids != MASK_SAMPLE_ID
+        target_sample_ids = combined_token_ids[:, num_ctx_tokens:, 0]
+        is_target_mask = target_sample_ids != MASK_SAMPLE_ID
 
         if not config.should_predict_register_tokens:
             # Exclude register tokens from the loss
