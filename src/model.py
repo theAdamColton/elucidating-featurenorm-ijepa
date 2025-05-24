@@ -234,7 +234,7 @@ class Encoder(nn.Module):
         self,
         x: torch.Tensor,
         token_ids: torch.Tensor,
-        return_all_layer_features=False,
+        return_all_layer_features: bool = False,
     ):
         config = self.config
 

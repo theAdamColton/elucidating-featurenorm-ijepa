@@ -18,9 +18,6 @@ conf:
 
   interp_warmup_steps: 30000
 
-  train_dataset_pattern: dataset/imagenet1k-train-{0000..1023}.tar
-  val_dataset_pattern: dataset/imagenet1k-validation-{00..63}.tar
-
   num_register_tokens: 0
   validate_every_num_epochs: 40
 

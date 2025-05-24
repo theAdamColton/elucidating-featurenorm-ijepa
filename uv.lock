@@ -501,7 +501,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "numpy", specifier = ">=2.2.5" },
     { name = "pillow-simd", specifier = ">=9.5.0.post2" },
-    { name = "tensorset", specifier = ">=0.4.2" },
+    { name = "tensorset", specifier = "==0.4.5" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "torch-pca", specifier = ">=1.1.0" },
     { name = "torchvision", specifier = ">=0.22.0" },
@@ -1424,14 +1424,14 @@ wheels = [
 
 [[package]]
 name = "tensorset"
-version = "0.4.2"
+version = "0.4.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/c5/386218b24ee31455c79b4c80693fa7b6b7aca9429d685b032f9eb2fa9eb6/tensorset-0.4.2.tar.gz", hash = "sha256:a523146fb0a09bf8e14e798edb253fe99d81601d675ae07ccd6c17077c5c8ac3", size = 7066 }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/25/b4b263854d2291a82857aaa482825501a6ada52128c3b115f012efe49031/tensorset-0.4.5.tar.gz", hash = "sha256:94c52da00b88f78f8b5124df91d5780836e7e5373288ee83faad3ac047433276", size = 7278 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/80/a0/13a44301b33d3f73f8428c62175c5568e4a9e731d275b82a1b03c8bbf24e/tensorset-0.4.2-py3-none-any.whl", hash = "sha256:9c033b6a319fc6489c06f4ac1bee6d24a8a1d618eb9557ebad48f9812d83479e", size = 6459 },
+    { url = "https://files.pythonhosted.org/packages/38/92/4cdf705bd60ec6fc495b28f34b87b8afc85dbd0f2d9392781180a31e7a24/tensorset-0.4.5-py3-none-any.whl", hash = "sha256:174bf92b54cd8cad3ab9427367fc95430ff2588b45c52f7a56a71dbb7a72297c", size = 6625 },
 ]
 
 [[package]]

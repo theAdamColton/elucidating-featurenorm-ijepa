@@ -1,3 +1,4 @@
+import math
 import time
 import gc
 from contextlib import contextmanager
@@ -5,16 +6,32 @@ from datetime import datetime
 from pathlib import Path
 import yaml
 from dataclasses import asdict
+
 from tqdm import tqdm
 import torch
 import wandb
 import tensorset as ts
+import einx
 
 from main_conf import MainConfig
 from src.dataset import MASK_SAMPLE_ID
 from src.model import IJEPAModel
 from src.validate import validate
 from src.dataset import get_lidar_data
+from src.lidar import compute_lidar_score
+
+
+def masked_mean(x, mask):
+    b, s, d = x.shape
+    assert einx.matches("b s", mask, b=b, s=s)
+
+    x = einx.multiply("b s d, b s", x, mask)
+    x = einx.sum("b [s] d", x)
+    num_unmasked = einx.sum("b [s]", mask)
+    num_unmasked.clip_(1)
+    x = einx.divide("b d, b", x, num_unmasked)
+
+    return x
 
 
 class Trainer:
@@ -49,17 +66,15 @@ class Trainer:
             yield
 
     def prepare_context_target_batch(self, batch):
-        packed_batch, *_ = batch
-
-        if not isinstance(packed_batch, ts.TensorSet):
+        if not isinstance(batch, ts.TensorSet):
             raise ValueError()
 
-        position_ids = packed_batch.named_columns.pop("position_ids")
-        sample_ids = packed_batch.named_columns.pop("sample_ids")
+        position_ids = batch.named_columns.pop("position_ids")
+        sample_ids = batch.named_columns.pop("sample_ids")
         # Token ids contains along the channel dim (sample_ids, register id, height idx, width idx)
         token_ids = torch.cat((sample_ids.unsqueeze(-1), position_ids), -1)
 
-        patches = packed_batch.named_columns.pop("patches")
+        patches = batch.named_columns.pop("patches")
 
         patches = patches.to(
             device=self.conf.torch_device,
@@ -113,12 +128,63 @@ class Trainer:
             yaml.dump(conf_dict, f)
 
     def compute_lidar_score(self):
+        conf = self.conf
         if self.lidar_data is None:
-            self.lidar_data = get_lidar_data(
-                config=self.conf.context_target_dataset,
-                dataset_pattern=self.conf.train_dataset_pattern,
-                image_column_name=self.conf.image_column_name,
+            lidar_data = get_lidar_data(
+                config=conf.context_target_dataset,
+                dataset_pattern=conf.train_dataset_pattern,
+                num_unique_samples=conf.lidar_num_unique_samples,
+                num_repeat_samples=conf.lidar_num_augmentations,
+                image_column_name=conf.image_column_name,
             )
+
+            def _ungroup(x):
+                return einx.rearrange("n q s ... -> (n q) s ...", x)
+
+            lidar_data = lidar_data.apply(_ungroup)
+
+            self.lidar_data = lidar_data
+
+        # Embed lidar data
+
+        batch_size = conf.batch_size
+        num_samples_to_embed = self.lidar_data.size(0)
+        num_batches = math.ceil(num_samples_to_embed / batch_size)
+
+        features = []
+
+        for i in range(num_batches):
+            idx_start = i * batch_size
+            batch = self.lidar_data.iloc[idx_start : idx_start + batch_size]
+
+            patches, token_ids = self.prepare_context_target_batch(batch)
+
+            print(patches.shape, token_ids.shape)
+
+            # TODO compile this encoder call
+            with torch.inference_mode():
+                with self.autocast_fn():
+                    encoder_hidden_states, *_ = self.model.encoder(
+                        x=patches, token_ids=token_ids
+                    )
+
+            sample_ids = token_ids[..., 0]
+            is_sample_mask = sample_ids != MASK_SAMPLE_ID
+
+            encoder_hidden_states = encoder_hidden_states.float()
+            # b [s] d
+            encoder_hidden_states = masked_mean(encoder_hidden_states, is_sample_mask)
+
+            features.append(encoder_hidden_states)
+
+        features = torch.cat(features)
+        features = einx.rearrange(
+            "(n q) d -> n q d", features, n=conf.lidar_num_unique_samples
+        )
+
+        lidar_score = compute_lidar_score(features)
+
+        return float(lidar_score)
 
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
@@ -155,9 +221,6 @@ class Trainer:
                 return_smooth_rank=should_log,
             )
 
-        if should_log_lidar:
-            lidar_score = self.compute_lidar_score()
-
         loss = result_dict["loss"]
 
         loss.backward()
@@ -170,6 +233,7 @@ class Trainer:
         for g in self.optimizer.param_groups:
             g["lr"] = lr
 
+        # EMA update
         for ema_p, p in zip(
             self.model.ema_encoder.parameters(), self.model.encoder.parameters()
         ):
@@ -177,6 +241,22 @@ class Trainer:
                 ema_p.lerp_(p, 1 - ema_beta)
             else:
                 ema_p.copy_(p)
+
+        log_dict = dict(
+            epoch=self.training_state["epoch"],
+            loss=loss.item(),
+            lr=lr,
+            ema_beta=ema_beta,
+            interp=interp,
+            num_total_samples=self.training_state["num_total_samples"],
+        )
+
+        if "smooth_rank" in result_dict:
+            log_dict["smooth_rank"] = result_dict["smooth_rank"].item()
+
+        # Compute the lidar score
+        if should_log_lidar:
+            log_dict["lidar_score"] = self.compute_lidar_score()
 
         # Count the total number of samples in this batch
         num_samples_in_batch = 0
@@ -186,42 +266,36 @@ class Trainer:
                 ids.remove(MASK_SAMPLE_ID)
             num_samples_in_batch += len(ids)
 
+        log_dict["num_samples_in_batch"] = num_samples_in_batch
+
         elapsed = time.time() - start_time
-        samples_per_second = num_samples_in_batch / elapsed
+        log_dict["step_time"] = elapsed
+        log_dict["samples_per_second"] = num_samples_in_batch / elapsed
 
         if should_log:
-            mask_rate = (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean()
+            log_dict["mask_rate"] = (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean()
 
             wandb.log(
-                dict(
-                    epoch=self.training_state["epoch"],
-                    loss=loss.item(),
-                    num_samples=num_samples_in_batch,
-                    lr=lr,
-                    ema_beta=ema_beta,
-                    smooth_rank=result_dict["smooth_rank"].item(),
-                    mask_rate=mask_rate,
-                    interp=interp,
-                    num_total_samples=self.training_state["num_total_samples"],
-                    samples_per_second=samples_per_second,
-                    step_time=elapsed,
-                ),
+                log_dict,
                 step=self.training_state["global_step"],
             )
 
+        # Update training state
         self.training_state["global_step"] += 1
         self.training_state["num_total_samples"] += num_samples_in_batch
 
-        return loss.item()
+        return log_dict
 
     def train_one_epoch(self, dataloader_stream, prog_bar):
         while True:
             start_time = time.time()
-            batch = next(dataloader_stream)
-            loss = self.train_step(batch, start_time)
+            batch, *_ = next(dataloader_stream)
+            log_dict = self.train_step(batch, start_time)
 
             prog_bar.update(1)
-            prog_bar.set_description(f"{self.training_state} loss {round(loss, 3)}")
+            prog_bar.set_description(
+                f"{self.training_state} loss {round(log_dict['loss'], 3)}"
+            )
 
             estimated_epoch = (
                 self.training_state["num_total_samples"]

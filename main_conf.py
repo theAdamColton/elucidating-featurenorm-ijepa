@@ -24,7 +24,11 @@ class MainConfig:
     patch_size: int = 16
 
     log_every_num_steps: int = 50
+
     log_lidar_every_num_steps: int = 1000
+    lidar_num_unique_samples: int = 1000
+    lidar_num_augmentations: int = 50
+
     validate_every_num_epochs: int = 10
     max_num_save_checkpoints: int = 2
 
@@ -62,7 +66,7 @@ class MainConfig:
         "datasets/imagenet1k-256-wds/imagenet1k-train-{0000..1023}.tar"
     )
     val_dataset_pattern: str = (
-        "dataset/imagenet1k-256-wds/imagenet1k-validation-{00..63}.tar"
+        "datasets/imagenet1k-256-wds/imagenet1k-validation-{00..63}.tar"
     )
     train_dataset_length: int = 1281167
     image_column_name: str = "jpg"

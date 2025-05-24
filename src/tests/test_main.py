@@ -35,6 +35,8 @@ class TestMain(unittest.TestCase):
             test_mode=True,
             validation_probe_batch_size=32,
             num_workers=0,
+            lidar_num_unique_samples=20,
+            lidar_num_augmentations=10,
         )
         return conf
 

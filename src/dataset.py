@@ -21,6 +21,10 @@ def identity(x):
     return x
 
 
+def get_rng():
+    return random.Random(int((os.getpid() + time.time()) * 1e9))
+
+
 def get_tensorset_collation_fn(mode="cat"):
     def tensorset_collation_fn(samples, combine_tensors=True, combine_scalars=True):
         batched = list(zip(*samples))
@@ -373,7 +377,8 @@ class RandomImageResizer:
         self.resample_mode = resample_mode
 
         if rng is None:
-            rng = random.Random()
+            rng = get_rng()
+
         self.rng = rng
 
     def __call__(self, row):
@@ -447,7 +452,8 @@ class ContextTargetSplitter:
         self.max_context_sequence_length = max_context_sequence_length
 
         if rng is None:
-            rng = random.Random()
+            rng = get_rng()
+
         self.rng = rng
 
         self.torch_rng = torch.Generator().manual_seed(rng.randint(0, 2**30))
@@ -541,7 +547,7 @@ def _get_random_sample_id(rng):
 
 def _assign_sample_ids(data, rng=None):
     if rng is None:
-        rng = random.Random(int((os.getpid() + time.time()) * 1e9))
+        rng = get_rng()
 
     for sample in data:
         sample_id = _get_random_sample_id(rng)
@@ -621,9 +627,12 @@ class PatchesToTensorSet:
         x = row.pop("x_patches")
         x_position_ids = row.pop("x_position_ids")
         row["x_patches"] = ts.TensorSet(patches=x, position_ids=x_position_ids)
-        y = row.pop("y_patches")
-        y_position_ids = row.pop("y_position_ids")
-        row["y_patches"] = ts.TensorSet(patches=y, position_ids=y_position_ids)
+
+        if "y_patches" in row:
+            y = row.pop("y_patches")
+            y_position_ids = row.pop("y_position_ids")
+            row["y_patches"] = ts.TensorSet(patches=y, position_ids=y_position_ids)
+
         return row
 
 
@@ -684,7 +693,6 @@ def get_context_target_dataloader(
     image_column_name: str = "jpg",
     batch_size: int = 256,
     num_workers: int = 0,
-    num_repeat_samples: int | None = None,
     is_training: bool = True,
 ):
     """
@@ -755,9 +763,6 @@ def get_context_target_dataloader(
         # Assign a unique sample id to each row
         .compose(assign_sample_ids())
     )
-
-    if num_repeat_samples is not None:
-        dataset = dataset.compose(repeat_samples(num_repeat_samples))
 
     dataset = (
         dataset.map(
@@ -850,15 +855,24 @@ def _repeat_samples(data, amount):
 repeat_samples = wds.pipelinefilter(_repeat_samples)
 
 
+class PadTensorSet:
+    def __init__(self, length=128, pad_value_dict={}):
+        self.length = length
+        self.pad_value_dict = pad_value_dict
+
+    def __call__(self, x: ts.TensorSet):
+        sample_size = x.size(0)
+        pad_amount = self.length - sample_size
+        x = x.pad(pad_amount, 0, value_dict=self.pad_value_dict)
+        return x
+
+
 def get_lidar_data(
     config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
     dataset_pattern: str = "",
-    seed: int | None = None,
     image_column_name: str = "jpg",
-    num_batches: int = 4,
-    batch_size: int = 256,
-    num_unique_images: int = 1000,
-    num_repeat_samples: int = 50,
+    num_unique_samples: int = 500,
+    num_repeat_samples: int = 48,
 ):
     """
     similar to get_context_target_dataset,
@@ -868,22 +882,100 @@ def get_lidar_data(
     and randomly masking.
     """
 
-    dataloader = get_context_target_dataloader(
-        config=config,
-        dataset_pattern=dataset_pattern,
-        dataset_length=None,
-        image_column_name=image_column_name,
-        batch_size=batch_size,
-        num_workers=0,
-        num_repeat_samples=num_repeat_samples,
-        is_training=False,
+    tensorset_pad_value_dict = {
+        "position_ids": 0,
+        "patches": 0,
+        "sample_ids": MASK_SAMPLE_ID,
+    }
+
+    dataset = (
+        _get_image_dataset(
+            dataset_pattern=dataset_pattern,
+            is_training=False,
+            image_column_name=image_column_name,
+        )
+        .select(ImageSizeFilter(config.min_side_length))
+        # Assign a unique sample id to each row
+        .compose(assign_sample_ids())
+        # Repeat samples
+        .compose(repeat_samples(num_repeat_samples))
+        # Randomly resize images, after repeating
+        .map(
+            RandomImageResizer(
+                max_side_length=config.max_side_length,
+                min_side_length=config.min_side_length,
+                multiple_of=config.resize_multiple_of,
+                max_num_pixels=config.max_num_pixels,
+            )
+        )
+        .map(ImagePatcher(config.patch_size))
+        .map(
+            ContextTargetSplitter(
+                window_size=config.mask_window_size,
+                min_context_capacity=config.min_context_capacity,
+                max_context_capacity=config.max_context_capacity,
+                max_context_sequence_length=config.max_num_context_patches,
+            )
+        )
+        # Keep only the contexts
+        .rename(
+            x_patches="x_patches",
+            x_position_ids="x_position_ids",
+            sample_id="sample_id",
+            keep=False,
+        )
+        # Add register tokens to the context
+        .map(
+            RegisterTokenAdder(
+                num_register_tokens=config.num_register_tokens,
+                token_column_name="x_patches",
+                position_id_column_name="x_position_ids",
+            )
+        )
+        # Convert to TensorSet
+        .map(PatchesToTensorSet())
+        .map(AddSampleIdsToTensorSet("x_patches"))
+        # Pad contexts
+        .map_dict(
+            x_patches=PadTensorSet(
+                config.packer_context_sequence_length,
+                pad_value_dict=tensorset_pad_value_dict,
+            )
+        )
+        .to_tuple("x_patches")
     )
 
-    batches = []
-    dataloader_iter = iter(dataloader)
-    for _ in range(num_batches):
-        batches.append(next(dataloader_iter))
+    # Fetch augmented samples
+    grouped_samples = []
+    dataset_iter = iter(dataset)
+    for _ in range(num_unique_samples):
+        samples = []
+        sample_id = None
 
-    import bpdb
+        for _ in range(num_repeat_samples):
+            sample, *_ = next(dataset_iter)
 
-    bpdb.set_trace()
+            sample_ids = sample["sample_ids"]
+
+            # Since padding is added to the right,
+            # we can take the first sample ID and
+            # be sure that it isnt a mask token
+            observed_sample_id = sample_ids[0]
+            assert observed_sample_id != MASK_SAMPLE_ID
+
+            if sample_id is None:
+                sample_id = sample_id
+            else:
+                # We should make sure that this run of samples originates
+                # all from the same sample
+                assert sample_id == observed_sample_id
+
+            samples.append(sample)
+
+        samples = ts.stack(samples, 0)
+
+        grouped_samples.append(samples)
+
+    grouped_samples = ts.stack(grouped_samples, 0)
+
+    return grouped_samples
