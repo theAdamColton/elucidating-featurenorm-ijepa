@@ -200,12 +200,6 @@ class Trainer:
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
 
-        interp = 0
-        if self.conf.should_interp:
-            interp = min(
-                1, self.training_state["global_step"] / self.conf.interp_warmup_steps
-            )
-
         ema_beta = (
             min(
                 1,
@@ -216,7 +210,8 @@ class Trainer:
         )
 
         should_log_lidar = (
-            self.training_state["global_step"] % self.conf.log_every_num_steps == 0
+            self.training_state["global_step"] % self.conf.log_lidar_every_num_steps
+            == 0
         )
 
         should_log = (
@@ -228,7 +223,6 @@ class Trainer:
                 patches=patches,
                 token_ids=token_ids,
                 context_sequence_length=self.conf.context_target_dataset.packer_context_sequence_length,
-                interp=interp,
                 return_smooth_rank=should_log,
             )
 
@@ -260,10 +254,12 @@ class Trainer:
             loss=loss.item(),
             lr=lr,
             ema_beta=ema_beta,
-            interp=interp,
         )
 
-        if "smooth_rank" in result_dict:
+        # TODO cleanup
+        if "smooth_rank" in result_dict and isinstance(
+            result_dict["smooth_rank"], torch.Tensor
+        ):
             log_dict["smooth_rank"] = result_dict["smooth_rank"].item()
 
         # Compute the lidar score

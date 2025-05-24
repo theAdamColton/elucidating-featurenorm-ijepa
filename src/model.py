@@ -483,7 +483,6 @@ class IJEPAModel(nn.Module):
         patches: torch.Tensor,
         token_ids: torch.Tensor,
         context_sequence_length: int = None,
-        interp=0,
         return_smooth_rank=False,
         return_tokenwise_loss=False,
         return_predictor_target_token_ids=False,

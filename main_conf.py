@@ -58,9 +58,6 @@ class MainConfig:
     ema_beta_start: float = 0.2
     ema_beta_warmup_steps: int = 1000
 
-    should_interp: bool = False
-    interp_warmup_steps: int = 100000
-
     # Webdataset tars
     train_dataset_pattern: str = (
         "datasets/imagenet1k-256-wds/imagenet1k-train-{0000..1023}.tar"
