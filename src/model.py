@@ -10,7 +10,7 @@ from src.transformer_blocks import TransformerBlock, TransformerBlockConfig, Dyn
 from src.dataset import MASK_SAMPLE_ID
 
 
-def get_attn_mask(sample_ids):
+def get_attn_mask(sample_ids, num_heads):
     attn_mask = einx.equal(
         "b s1, b s2 -> b s1 s2",
         sample_ids,
@@ -18,6 +18,7 @@ def get_attn_mask(sample_ids):
     )
     is_not_padding = sample_ids != MASK_SAMPLE_ID
     attn_mask = attn_mask & is_not_padding.unsqueeze(-1) & is_not_padding.unsqueeze(-2)
+    attn_mask = einx.rearrange("b s1 s2 -> b h s1 s2", attn_mask, h=num_heads)
     return attn_mask
 
 
@@ -269,7 +270,9 @@ class Encoder(nn.Module):
             )
             x = x + pos_emb
 
-        attn_mask = get_attn_mask(sample_ids)
+        attn_mask = get_attn_mask(
+            sample_ids, config.block_config.attention_config.num_attention_heads
+        )
 
         if return_all_layer_features:
             all_layer_features = torch.empty(
@@ -423,7 +426,9 @@ class Predictor(nn.Module):
 
         x = x + p_emb
 
-        attn_mask = get_attn_mask(sample_ids)
+        attn_mask = get_attn_mask(
+            sample_ids, config.block_config.attention_config.num_attention_heads
+        )
 
         if config.use_rope2d:
             rotary_embeds = self.pos_emb(position_ids)
