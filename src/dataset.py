@@ -864,8 +864,8 @@ def get_lidar_data(
     similar to get_context_target_dataset,
     but repeats samples a number of times ~50
 
-    each of the repeated samples is randomly masking using the
-    ContextTargetSplitter.
+    each of the repeated samples is subsequently randomly resized
+    and randomly masking.
     """
 
     dataloader = get_context_target_dataloader(

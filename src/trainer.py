@@ -116,7 +116,7 @@ class Trainer:
         if self.lidar_data is None:
             self.lidar_data = get_lidar_data(
                 config=self.conf.context_target_dataset,
-                dataset_pattern=self.conf.val_dataset_pattern,
+                dataset_pattern=self.conf.train_dataset_pattern,
                 image_column_name=self.conf.image_column_name,
             )
 

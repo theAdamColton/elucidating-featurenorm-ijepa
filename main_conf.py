@@ -59,9 +59,11 @@ class MainConfig:
 
     # Webdataset tars
     train_dataset_pattern: str = (
-        "/nvme/imagenet1k-256/imagenet1k-train-{0000..1023}.tar"
+        "datasets/imagenet1k-256-wds/imagenet1k-train-{0000..1023}.tar"
     )
-    val_dataset_pattern: str = "/nvme/imagenet1k-256/imagenet1k-validation-{00..63}.tar"
+    val_dataset_pattern: str = (
+        "dataset/imagenet1k-256-wds/imagenet1k-validation-{00..63}.tar"
+    )
     train_dataset_length: int = 1281167
     image_column_name: str = "jpg"
     label_column_name: str = "cls"
@@ -69,11 +71,11 @@ class MainConfig:
 
     # Webdataset tars
     monocular_depth_train_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..47}.tar"
+        "datasets/nyu-depthv2-wds/nyu-depth-train-{00000..47}.tar"
     )
     monocular_depth_train_dataset_length: int = 47584
     monocular_depth_val_dataset_pattern: str = (
-        "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar"
+        "datasets/nyu-depthv2-wds/nyu-depth-val-00000.tar"
     )
     depth_column_name: str = "depth.npy"
 

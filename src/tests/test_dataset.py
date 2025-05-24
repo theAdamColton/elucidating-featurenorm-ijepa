@@ -7,7 +7,14 @@ import torch
 import numpy as np
 from PIL import Image
 
-from src.dataset import PILImageResizer, RandomImageResizer, TorchImageResizer
+from main_conf import MainConfig
+from src.dataset import (
+    ContextTargetDatasetConfig,
+    PILImageResizer,
+    RandomImageResizer,
+    TorchImageResizer,
+    get_context_target_dataloader,
+)
 
 
 def make_random_pil_image(h, w):
@@ -70,3 +77,18 @@ class DatasetTests(unittest.TestCase):
             nh, nw, c = pixel_values.shape
             if nh == h and nw == w:
                 break
+
+    def test_dataset_no_patch_repeats(self):
+        config = ContextTargetDatasetConfig(packer_batch_size=8)
+        main_config = MainConfig()
+
+        dataloader = get_context_target_dataloader(
+            config=config,
+            dataset_pattern=main_config.train_dataset_pattern,
+        )
+
+        batch, *_ = next(iter(dataloader))
+
+        import bpdb
+
+        bpdb.set_trace()
