@@ -393,7 +393,7 @@ class Trainer:
         conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
 
         wandb.init(
-            project="ijepa-depthsmart",
+            project="ijepa-tanh",
             config=conf_d,
             mode="disabled" if self.conf.test_mode else None,
         )
