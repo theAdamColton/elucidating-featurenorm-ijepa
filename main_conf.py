@@ -48,7 +48,7 @@ class MainConfig:
         "extract-layers"
     )
 
-    resume_path: str | None = None
+    resume_checkpoint_path: str | None = None
 
     test_mode: bool = False
 

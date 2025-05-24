@@ -287,4 +287,6 @@ def validate(
         correct_labels = einx.equal("b n, b", preds, labs)
         accuracies = einx.mean("[b] n", correct_labels.float())
 
+    accuracies = accuracies.tolist()
+
     return accuracies

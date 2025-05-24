@@ -1,3 +1,4 @@
+import json
 import math
 import time
 import gc
@@ -55,6 +56,8 @@ class Trainer:
             Path("checkpoints") / f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+        self.log_file_path = self.checkpoint_folder_path / "training_log.jsonl"
+
         if conf.should_compile:
             self.model = torch.compile(self.model)
 
@@ -88,8 +91,11 @@ class Trainer:
 
         return patches, token_ids
 
-    def save_checkpoint(self):
+    def ensure_checkpoint_folder(self):
         self.checkpoint_folder_path.mkdir(exist_ok=True, parents=True)
+
+    def save_checkpoint(self):
+        self.ensure_checkpoint_folder()
 
         existing_checkpoints = list(self.checkpoint_folder_path.iterdir())
         existing_checkpoints.sort()
@@ -182,9 +188,16 @@ class Trainer:
             "(n q) d -> n q d", features, n=conf.lidar_num_unique_samples
         )
 
-        lidar_score = compute_lidar_score(features)
+        lidar_score = compute_lidar_score(features).item()
 
-        return float(lidar_score)
+        return lidar_score
+
+    def write_log_row(self, log_dict):
+        self.ensure_checkpoint_folder()
+
+        with open(self.log_file_path, "a") as f:
+            row = json.dumps(log_dict) + "\n"
+            f.write(row)
 
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
@@ -244,11 +257,12 @@ class Trainer:
 
         log_dict = dict(
             epoch=self.training_state["epoch"],
+            num_total_samples=self.training_state["num_total_samples"],
+            global_step=self.training_state["global_step"],
             loss=loss.item(),
             lr=lr,
             ema_beta=ema_beta,
             interp=interp,
-            num_total_samples=self.training_state["num_total_samples"],
         )
 
         if "smooth_rank" in result_dict:
@@ -273,16 +287,14 @@ class Trainer:
         log_dict["samples_per_second"] = num_samples_in_batch / elapsed
 
         if should_log:
-            log_dict["mask_rate"] = (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean()
+            log_dict["mask_rate"] = (
+                (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean().item()
+            )
 
             wandb.log(
                 log_dict,
                 step=self.training_state["global_step"],
             )
-
-        # Update training state
-        self.training_state["global_step"] += 1
-        self.training_state["num_total_samples"] += num_samples_in_batch
 
         return log_dict
 
@@ -291,6 +303,13 @@ class Trainer:
             start_time = time.time()
             batch, *_ = next(dataloader_stream)
             log_dict = self.train_step(batch, start_time)
+
+            # Write to log file
+            self.write_log_row(log_dict)
+
+            # Update training state
+            self.training_state["global_step"] += 1
+            self.training_state["num_total_samples"] += log_dict["num_samples_in_batch"]
 
             prog_bar.update(1)
             prog_bar.set_description(
@@ -340,6 +359,16 @@ class Trainer:
         depths = list(range(len(accuracies)))
         best_accuracy = max(accuracies)
 
+        log_dict = {
+            "epoch": self.training_state["epoch"],
+            "acc@1": best_accuracy,
+        }
+
+        for i, accuracy in enumerate(accuracies):
+            log_dict[f"depth{i:03}_acc@1"] = accuracy
+
+        self.write_log_row(log_dict)
+
         line_series = wandb.plot.line_series(
             xs=depths,
             ys=[accuracies],
@@ -348,12 +377,10 @@ class Trainer:
             xname="Depth",
         )
 
+        log_dict["depth vs acc@1"] = line_series
+
         wandb.log(
-            {
-                "depth vs acc@1": line_series,
-                "epoch": self.training_state["epoch"],
-                "acc@1": best_accuracy,
-            },
+            log_dict,
             step=self.training_state["global_step"],
         )
 

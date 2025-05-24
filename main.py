@@ -54,11 +54,13 @@ def main(conf: MainConfig = MainConfig()):
         with torch.autocast(conf.torch_device.type, conf.torch_dtype):
             yield
 
-    if conf.resume_path is not None:
+    if conf.resume_checkpoint_path is not None:
 
         def _load():
             d = torch.load(
-                conf.resume_path, map_location=conf.torch_device, weights_only=False
+                conf.resume_checkpoint_path,
+                map_location=conf.torch_device,
+                weights_only=False,
             )
             model.load_state_dict(d["model"], strict=False)
             optimizer.load_state_dict(d["optimizer"])
