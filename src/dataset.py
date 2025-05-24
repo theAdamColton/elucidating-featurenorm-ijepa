@@ -17,6 +17,10 @@ MAX_SAMPLE_ID = torch.iinfo(torch.long).max
 MIN_SAMPLE_ID = torch.iinfo(torch.long).min
 
 
+def identity(x):
+    return x
+
+
 def get_tensorset_collation_fn(mode="cat"):
     def tensorset_collation_fn(samples, combine_tensors=True, combine_scalars=True):
         batched = list(zip(*samples))
@@ -73,9 +77,6 @@ def _get_image_dataset(
         rng = random.Random(seed)
         shard_shuffle_seed = rng.randint(0, 2**30)
         shuffle_rng = random.Random(rng.randbytes(16))
-
-    def identity(x):
-        return x
 
     if is_training:
         nodesplitter = identity
@@ -677,17 +678,40 @@ class ContextTargetDatasetConfig:
 def get_context_target_dataloader(
     config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
     dataset_pattern: str = "",
-    dataset_length: int = None,
+    dataset_length: int | None = None,
     seed: int | None = None,
     shuffle_size_samples: int = 1000,
     image_column_name: str = "jpg",
     batch_size: int = 256,
     num_workers: int = 0,
+    num_repeat_samples: int | None = None,
+    is_training: bool = True,
 ):
     """
     Loads a webdataset containing image files,
     Randomly resizes, patches, and splits patches into context and target.
     Then packs context-target pairs, returning packed batches
+
+    dataset_pattern: str
+        This is the pattern for the tarfiles of the webdataset
+    dataset_length: int | None
+        Number of total samples of all the tarfiles
+    seed: int | None
+        Optional seed
+    shuffle_size_samples: int
+        Number of samples to shuffle before packing, and number of batches to shuffle
+        between workers
+    image_column_name: str
+        Name of the image column in the webdataset
+    batch_size: int
+        Batch size
+    num_workers: int
+        Num dataloader workers
+    num_repeat_samples: int | None
+        Optional, if an integer then individual samples are repeated this
+        number of times
+    is_training: bool
+        If true, then shards are sampled with replacement and shuffling is enabled
     """
 
     assert batch_size % config.packer_batch_size == 0
@@ -721,14 +745,22 @@ def get_context_target_dataloader(
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
-            is_training=True,
+            is_training=is_training,
             dataset_length=dataset_length,
             seed=seed,
             shuffle_size_samples=shuffle_size_samples,
             image_column_name=image_column_name,
         )
         .select(ImageSizeFilter(config.min_side_length))
-        .map(
+        # Assign a unique sample id to each row
+        .compose(assign_sample_ids())
+    )
+
+    if num_repeat_samples is not None:
+        dataset = dataset.compose(repeat_samples(num_repeat_samples))
+
+    dataset = (
+        dataset.map(
             RandomImageResizer(
                 max_side_length=config.max_side_length,
                 min_side_length=config.min_side_length,
@@ -763,8 +795,6 @@ def get_context_target_dataloader(
             )
         )
         .map(PatchesToTensorSet())
-        # Give a unique sample id to each row
-        .compose(assign_sample_ids())
         # Add in the sample ids to the tensorset
         .map(AddSampleIdsToTensorSet("x_patches"))
         .map(AddSampleIdsToTensorSet("y_patches"))
@@ -794,9 +824,9 @@ def get_context_target_dataloader(
     dataloader = (
         wds.WebLoader(dataset, batch_size=None, num_workers=num_workers, in_order=False)
         .compose(unbatched_tensorset())
-        # Shuffle samples from different worker shards
+        # Shuffle samples from different worker shards if training
         .shuffle(
-            size=shuffle_size_samples,
+            size=shuffle_size_samples if is_training else 0,
             initial=shuffle_size_samples,
             rng=shuffle_rng,
         )
@@ -809,59 +839,51 @@ def get_context_target_dataloader(
 def _repeat_samples(data, amount):
     for sample in data:
         for _ in range(amount):
-            yield sample
+            # Create a copy for each yield
+            # TODO
+            # I think will fail if any of the sample values
+            # are edited in place by pipeline functions after this repeat
+            sample_copy = dict(sample)
+            yield sample_copy
 
 
 repeat_samples = wds.pipelinefilter(_repeat_samples)
 
 
-def get_lidar_batches(
+def get_lidar_data(
     config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
     dataset_pattern: str = "",
     seed: int | None = None,
     image_column_name: str = "jpg",
+    num_batches: int = 4,
     batch_size: int = 256,
     num_unique_images: int = 1000,
-    num_repeat: int = 50,
+    num_repeat_samples: int = 50,
 ):
     """
     similar to get_context_target_dataset,
-    but keeps track of the unique ID of each image,
-    and repeats images a large number of times ~50
+    but repeats samples a number of times ~50
+
+    each of the repeated samples is randomly masking using the
+    ContextTargetSplitter.
     """
 
-    if seed is not None:
-        print(
-            "Warning! Seeding should only be used for testing purposes and not for pretraining!"
-        )
-        rng = random.Random()
-        rng.seed(seed)
-        resizer_rng = random.Random(rng.randbytes(16))
-        splitter_rng = random.Random(rng.randbytes(16))
-        shuffle_rng = random.Random(rng.randbytes(16))
-    else:
-        rng = None
-        resizer_rng = None
-        splitter_rng = None
-        shuffle_rng = None
-
-    dataset = (
-        _get_image_dataset(
-            dataset_pattern=dataset_pattern,
-            is_training=False,
-            seed=seed,
-            image_column_name=image_column_name,
-        )
-        .select(ImageSizeFilter(config.min_side_length))
-        .map(
-            RandomImageResizer(
-                max_side_length=config.max_side_length,
-                min_side_length=config.min_side_length,
-                multiple_of=config.resize_multiple_of,
-                max_num_pixels=config.max_num_pixels,
-                rng=resizer_rng,
-            )
-        )
-        .map(ImagePatcher(config.patch_size))
-        .compose(repeat_samples(num_repeat))
+    dataloader = get_context_target_dataloader(
+        config=config,
+        dataset_pattern=dataset_pattern,
+        dataset_length=None,
+        image_column_name=image_column_name,
+        batch_size=batch_size,
+        num_workers=0,
+        num_repeat_samples=num_repeat_samples,
+        is_training=False,
     )
+
+    batches = []
+    dataloader_iter = iter(dataloader)
+    for _ in range(num_batches):
+        batches.append(next(dataloader_iter))
+
+    import bpdb
+
+    bpdb.set_trace()

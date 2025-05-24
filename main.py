@@ -22,9 +22,6 @@ def main(conf: MainConfig = MainConfig()):
         torch.manual_seed(conf.seed)
         np.random.seed(conf.seed)
 
-    device = torch.device(conf.device)
-    dtype = getattr(torch, conf.dtype)
-
     num_image_channels = conf.num_image_channels
 
     patch_size = conf.patch_size
@@ -39,7 +36,7 @@ def main(conf: MainConfig = MainConfig()):
         num_workers=conf.num_workers,
     )
 
-    model = IJEPAModel(conf.model).to(device)
+    model = IJEPAModel(conf.model).to(conf.torch_device)
 
     trainable_params = tuple(p for p in model.parameters() if p.requires_grad)
 
@@ -54,13 +51,15 @@ def main(conf: MainConfig = MainConfig()):
 
     @contextmanager
     def autocast_fn():
-        with torch.autocast(device.type, dtype):
+        with torch.autocast(conf.torch_device.type, conf.torch_dtype):
             yield
 
     if conf.resume_path is not None:
 
         def _load():
-            d = torch.load(conf.resume_path, map_location=device, weights_only=False)
+            d = torch.load(
+                conf.resume_path, map_location=conf.torch_device, weights_only=False
+            )
             model.load_state_dict(d["model"], strict=False)
             optimizer.load_state_dict(d["optimizer"])
             training_state.update(d["training_state"])
@@ -87,7 +86,7 @@ def main(conf: MainConfig = MainConfig()):
             num_workers=conf.num_workers,
             train_dataset_pattern=conf.train_dataset_pattern,
             val_dataset_pattern=conf.val_dataset_pattern,
-            dtype=dtype,
+            dtype=conf.torch_dtype,
             should_compile=conf.should_compile,
             test_mode=conf.test_mode,
             validation_probe_lr=conf.validation_probe_lr,
@@ -111,7 +110,7 @@ def main(conf: MainConfig = MainConfig()):
             train_dataset_length=conf.monocular_depth_train_dataset_length,
             val_dataset_pattern=conf.monocular_depth_val_dataset_pattern,
             feature_depth=conf.validation_monocular_depth_feature_depth,
-            dtype=dtype,
+            dtype=conf.torch_dtype,
             test_mode=conf.test_mode,
             should_compile=conf.should_compile,
             validation_probe_lr=conf.validation_monocular_depth_lr,
@@ -126,8 +125,8 @@ def main(conf: MainConfig = MainConfig()):
             dataloader=dataloader,
             context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
             model=model,
-            device=device,
-            dtype=dtype,
+            device=conf.torch_device,
+            dtype=conf.torch_dtype,
             patch_size=patch_size,
             num_image_channels=num_image_channels,
             autocast_fn=autocast_fn,
@@ -138,8 +137,8 @@ def main(conf: MainConfig = MainConfig()):
             dataloader=dataloader,
             context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
             model=model,
-            device=device,
-            dtype=dtype,
+            device=conf.torch_device,
+            dtype=conf.torch_dtype,
             patch_size=patch_size,
             num_image_channels=num_image_channels,
             autocast_fn=autocast_fn,
@@ -152,8 +151,6 @@ def main(conf: MainConfig = MainConfig()):
             training_state=training_state,
             conf=conf,
             dataloader=dataloader,
-            device=device,
-            dtype=dtype,
         )
         trainer.train()
 

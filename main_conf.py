@@ -1,6 +1,8 @@
 from typing import Literal
 from dataclasses import dataclass, field
 
+import torch
+
 
 from src.model import IJEPAConfig
 from src.dataset import ContextTargetDatasetConfig
@@ -22,6 +24,7 @@ class MainConfig:
     patch_size: int = 16
 
     log_every_num_steps: int = 50
+    log_lidar_every_num_steps: int = 1000
     validate_every_num_epochs: int = 10
     max_num_save_checkpoints: int = 2
 
@@ -99,3 +102,6 @@ class MainConfig:
         assert (
             self.num_register_tokens == self.context_target_dataset.num_register_tokens
         )
+
+        self.torch_device = torch.device(self.device)
+        self.torch_dtype = getattr(torch, self.dtype)

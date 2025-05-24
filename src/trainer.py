@@ -14,6 +14,7 @@ from main_conf import MainConfig
 from src.dataset import MASK_SAMPLE_ID
 from src.model import IJEPAModel
 from src.validate import validate
+from src.dataset import get_lidar_data
 
 
 class Trainer:
@@ -24,14 +25,10 @@ class Trainer:
         training_state: dict,
         conf: MainConfig,
         dataloader,
-        device,
-        dtype,
     ):
         self.model = model
         self.conf = conf
         self.dataloader = dataloader
-        self.device = device
-        self.dtype = dtype
         self.training_state = training_state
         self.patch_size = conf.patch_size
 
@@ -44,9 +41,11 @@ class Trainer:
         if conf.should_compile:
             self.model = torch.compile(self.model)
 
+        self.lidar_data = None
+
     @contextmanager
     def autocast_fn(self):
-        with torch.autocast(self.device.type, self.dtype):
+        with torch.autocast(self.conf.torch_device.type, self.conf.torch_dtype):
             yield
 
     def prepare_context_target_batch(self, batch):
@@ -62,8 +61,12 @@ class Trainer:
 
         patches = packed_batch.named_columns.pop("patches")
 
-        patches = patches.to(device=self.device, dtype=self.dtype, non_blocking=True)
-        token_ids = token_ids.to(self.device, non_blocking=True)
+        patches = patches.to(
+            device=self.conf.torch_device,
+            dtype=self.conf.torch_dtype,
+            non_blocking=True,
+        )
+        token_ids = token_ids.to(self.conf.torch_device, non_blocking=True)
 
         # Scale from [0,255] to [-1,1]
         patches = (patches / 255) * 2 - 1
@@ -109,6 +112,14 @@ class Trainer:
         with open(yaml_save_path, "w") as f:
             yaml.dump(conf_dict, f)
 
+    def compute_lidar_score(self):
+        if self.lidar_data is None:
+            self.lidar_data = get_lidar_data(
+                config=self.conf.context_target_dataset,
+                dataset_pattern=self.conf.val_dataset_pattern,
+                image_column_name=self.conf.image_column_name,
+            )
+
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
 
@@ -127,9 +138,13 @@ class Trainer:
             + self.conf.ema_beta_start
         )
 
+        should_log_lidar = (
+            self.training_state["global_step"] % self.conf.log_every_num_steps == 0
+        )
+
         should_log = (
-            self.training_state["global_step"] % self.conf.log_every_num_steps
-        ) == 0
+            self.training_state["global_step"] % self.conf.log_every_num_steps == 0
+        ) or should_log_lidar
 
         with self.autocast_fn():
             result_dict = self.model(
@@ -139,6 +154,9 @@ class Trainer:
                 interp=interp,
                 return_smooth_rank=should_log,
             )
+
+        if should_log_lidar:
+            lidar_score = self.compute_lidar_score()
 
         loss = result_dict["loss"]
 
@@ -232,7 +250,7 @@ class Trainer:
             num_workers=self.conf.num_workers,
             train_dataset_pattern=self.conf.train_dataset_pattern,
             val_dataset_pattern=self.conf.val_dataset_pattern,
-            dtype=self.dtype,
+            dtype=self.conf.torch_dtype,
             should_compile=self.conf.should_compile,
             test_mode=self.conf.test_mode,
             validation_probe_lr=self.conf.validation_probe_lr,
