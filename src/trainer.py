@@ -165,8 +165,6 @@ class Trainer:
 
             patches, token_ids = self.prepare_context_target_batch(batch)
 
-            print(patches.shape, token_ids.shape)
-
             # TODO compile this encoder call
             with torch.inference_mode():
                 with self.autocast_fn():

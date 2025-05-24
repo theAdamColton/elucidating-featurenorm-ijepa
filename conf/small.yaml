@@ -13,8 +13,8 @@ conf:
   ema_beta_warmup_steps: 1000
 
   start_lr: 1e-4
-  lr: 1e-3
-  num_warmup_steps: 20000
+  lr: 5e-4
+  num_warmup_steps: 10000
 
   interp_warmup_steps: 30000
 
@@ -30,13 +30,13 @@ conf:
         mlp_config:
           embed_dim: 384
           num_experts: 8
-          norm_mode: dyntanh
+          norm_mode: layernorm
         attention_config:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-          should_use_qk_norm: false
-        norm_mode: dyntanh
+          should_use_qk_norm: true
+        norm_mode: layernorm
       norm_out_mode: dyntanh
       norm_elementwise_affine: false
 
@@ -47,13 +47,13 @@ conf:
         mlp_config:
           embed_dim: 256
           num_experts: 8
-          norm_mode: dyntanh
+          norm_mode: layernorm
         attention_config:
           embed_dim: 256
           head_dim: 64
           num_attention_heads: 4
-          should_use_qk_norm: false
-        norm_mode: dyntanh
+          should_use_qk_norm: true
+        norm_mode: layernorm
       norm_out_mode: dyntanh
 
     predictor_batch_repeat: 4
