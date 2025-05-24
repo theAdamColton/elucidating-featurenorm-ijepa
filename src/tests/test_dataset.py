@@ -9,6 +9,7 @@ from PIL import Image
 
 from main_conf import MainConfig
 from src.dataset import (
+    MASK_SAMPLE_ID,
     ContextTargetDatasetConfig,
     PILImageResizer,
     RandomImageResizer,
@@ -78,17 +79,41 @@ class DatasetTests(unittest.TestCase):
             if nh == h and nw == w:
                 break
 
-    def ___test_dataset_no_patch_repeats(self):
+    def test_dataset_no_patch_repeats(self):
         config = ContextTargetDatasetConfig(packer_batch_size=8)
         main_config = MainConfig()
 
         dataloader = get_context_target_dataloader(
             config=config,
             dataset_pattern=main_config.train_dataset_pattern,
+            shuffle_size_samples=100,
+            num_workers=2,
         )
 
         batch, *_ = next(iter(dataloader))
 
-        import bpdb
+        b = batch.size(0)
 
-        bpdb.set_trace()
+        sample_ids = batch["sample_ids"]
+        position_ids = batch["position_ids"][..., -2:]
+
+        for i in range(b):
+            element_sample_ids = sample_ids[i]
+            element_position_ids = position_ids[i]
+            unique_ids = torch.unique(element_sample_ids).tolist()
+            if MASK_SAMPLE_ID in unique_ids:
+                unique_ids.remove(MASK_SAMPLE_ID)
+
+            for id in unique_ids:
+                mask = element_sample_ids == id
+
+                sample_positions = element_position_ids[mask]
+
+                seen_positions = set()
+
+                for position in sample_positions:
+                    position = (int(position[0]), int(position[1]))
+                    self.assertNotIn(
+                        position, seen_positions, f"{id} has duplicated patches!"
+                    )
+                    seen_positions.add(position)
