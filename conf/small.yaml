@@ -8,14 +8,6 @@ conf:
   batch_size: 256
   num_workers: 4
 
-  ema_beta_start: 0.8
-  ema_beta: 0.996
-  ema_beta_warmup_steps: 1000
-
-  start_lr: 1e-4
-  lr: 5e-4
-  num_warmup_steps: 10000
-
   num_register_tokens: 0
   validate_every_num_epochs: 40
 
@@ -52,7 +44,7 @@ conf:
           num_attention_heads: 4
           should_use_qk_norm: true
         norm_mode: layernorm
-      norm_out_mode: dyntanh
+      norm_out_mode: layernorm
 
     predictor_batch_repeat: 4
     target_norm_mode: disabled

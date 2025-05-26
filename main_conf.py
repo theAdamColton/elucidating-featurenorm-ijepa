@@ -16,9 +16,17 @@ class MainConfig:
     batch_size: int = 256
     num_workers: int = 0
     seed: int | None = None
-    num_warmup_steps: int = 5000
+
+    # lr starts at start_lr, and is warmed up to steady_lr for num_lr_warmup_steps
+    # Then it remains at steady_lr for num_lr_steady_steps,
+    # after which it is cooled down to lr_end for num_lr_cooldown_steps
     start_lr: float = 1e-4
-    lr: float = 5e-4
+    num_lr_warmup_steps: int = 10000
+    steady_lr: float = 5e-4
+    num_lr_steady_steps: int = 250000
+    num_lr_cooldown_steps: int = 50000
+    end_lr: float = 1e-5
+
     num_epochs: int = 800
 
     patch_size: int = 16
@@ -29,7 +37,7 @@ class MainConfig:
     lidar_num_unique_samples: int = 1000
     lidar_num_augmentations: int = 50
 
-    validate_every_num_epochs: int = 10
+    validate_every_num_epochs: int = 50
     max_num_save_checkpoints: int = 2
 
     context_target_dataset: ContextTargetDatasetConfig = field(
@@ -54,9 +62,11 @@ class MainConfig:
 
     num_image_channels: int = 3
 
-    ema_beta: float = 0.996
-    ema_beta_start: float = 0.2
+    ema_beta_start: float = 0.8
     ema_beta_warmup_steps: int = 1000
+    ema_beta_steady: float = 0.996
+    ema_beta_steady_steps: int = 300000
+    ema_beta_end: float = 0.9999
 
     # Webdataset tars
     train_dataset_pattern: str = (
@@ -105,6 +115,12 @@ class MainConfig:
         assert (
             self.num_register_tokens == self.context_target_dataset.num_register_tokens
         )
+
+        assert self.start_lr <= self.steady_lr
+        assert self.steady_lr >= self.end_lr
+        assert self.num_lr_warmup_steps >= 0
+        assert self.num_lr_steady_steps >= 0
+        assert self.num_lr_cooldown_steps >= 0
 
         self.torch_device = torch.device(self.device)
         self.torch_dtype = getattr(torch, self.dtype)

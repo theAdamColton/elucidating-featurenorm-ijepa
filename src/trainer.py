@@ -197,17 +197,50 @@ class Trainer:
             row = json.dumps(log_dict) + "\n"
             f.write(row)
 
+    @property
+    def ema_beta(self):
+        conf = self.conf
+        global_step = self.training_state["global_step"]
+        if global_step <= conf.ema_beta_warmup_steps:
+            scale = global_step / conf.ema_beta_warmup_steps
+            beta = (
+                scale * (conf.ema_beta_steady - conf.ema_beta_start)
+                + conf.ema_beta_start
+            )
+            return beta
+
+        steady_step = global_step - conf.ema_beta_warmup_steps
+        scale = steady_step / conf.ema_beta_steady_steps
+        beta = (
+            conf.ema_beta_steady
+            - scale * (conf.ema_beta_steady - conf.ema_beta_end)
+            + conf.ema_beta_steady
+        )
+        beta = min(beta, conf.ema_beta_end)
+        return beta
+
+    @property
+    def lr(self):
+        conf = self.conf
+        global_step = self.training_state["global_step"]
+
+        if global_step <= conf.num_lr_warmup_steps:
+            scale = global_step / conf.num_lr_warmup_steps
+            lr = (conf.steady_lr - conf.start_lr) * scale + conf.start_lr
+        elif global_step - conf.num_lr_warmup_steps <= conf.num_lr_steady_steps:
+            lr = conf.steady_lr
+        else:
+            cooldown_step = (
+                global_step - conf.num_lr_warmup_steps - conf.num_lr_steady_steps
+            )
+            scale = cooldown_step / conf.num_lr_cooldown_steps
+            lr = conf.steady_lr - scale * (conf.steady_lr - conf.end_lr)
+            lr = max(lr, conf.end_lr)
+
+        return lr
+
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
-
-        ema_beta = (
-            min(
-                1,
-                self.training_state["global_step"] / self.conf.ema_beta_warmup_steps,
-            )
-            * (self.conf.ema_beta - self.conf.ema_beta_start)
-            + self.conf.ema_beta_start
-        )
 
         should_log_lidar = (
             self.training_state["global_step"] % self.conf.log_lidar_every_num_steps
@@ -232,12 +265,11 @@ class Trainer:
         self.optimizer.step()
         self.optimizer.zero_grad()
 
-        lr = (
-            min(1, self.training_state["global_step"] / self.conf.num_warmup_steps)
-        ) * (self.conf.lr - self.conf.start_lr) + self.conf.start_lr
+        lr = self.lr
         for g in self.optimizer.param_groups:
             g["lr"] = lr
 
+        ema_beta = self.ema_beta
         # EMA update
         for ema_p, p in zip(
             self.model.ema_encoder.parameters(), self.model.encoder.parameters()
