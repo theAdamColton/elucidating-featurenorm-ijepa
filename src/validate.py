@@ -135,7 +135,10 @@ def validate(
     with tempfile.TemporaryDirectory(dir=".") as tmpdir:
 
         def _embed_dataset(dl, prefix="train-"):
-            with wds.ShardWriter(f"{tmpdir}/{prefix}%04d.tar") as writer:
+            max_size_bytes = 1e9
+            with wds.ShardWriter(
+                f"{tmpdir}/{prefix}%04d.tar", maxsize=max_size_bytes
+            ) as writer:
                 pass
 
                 for batch in tqdm(dl, desc="embedding val dataset"):
