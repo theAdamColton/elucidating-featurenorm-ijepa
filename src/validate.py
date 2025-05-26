@@ -174,7 +174,7 @@ def validate(
                             "b s d -> b one d", layer_features, one=1
                         )
 
-                    layer_features = layer_features.cpu().to(torch.float16).numpy()
+                    layer_features = layer_features.to(torch.float16).cpu().numpy()
                     labels = labels.numpy()
 
                     # Write an entire batch to the tar file
