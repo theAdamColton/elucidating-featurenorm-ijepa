@@ -65,7 +65,7 @@ class MainConfig:
     ema_beta_start: float = 0.8
     ema_beta_warmup_steps: int = 1000
     ema_beta_steady: float = 0.996
-    ema_beta_steady_steps: int = 300000
+    ema_beta_steady_steps: int = 400000
     ema_beta_end: float = 0.9999
 
     # Webdataset tars
