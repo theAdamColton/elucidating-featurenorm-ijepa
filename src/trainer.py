@@ -211,11 +211,7 @@ class Trainer:
 
         steady_step = global_step - conf.ema_beta_warmup_steps
         scale = steady_step / conf.ema_beta_steady_steps
-        beta = (
-            conf.ema_beta_steady
-            - scale * (conf.ema_beta_steady - conf.ema_beta_end)
-            + conf.ema_beta_steady
-        )
+        beta = conf.ema_beta_steady - scale * (conf.ema_beta_steady - conf.ema_beta_end)
         beta = min(beta, conf.ema_beta_end)
         return beta
 
