@@ -38,7 +38,7 @@ def prepare_context_target_batch(batch, device, dtype):
     return patches, token_ids
 
 
-def gaussian_blur(x, kernel_size=3, sigma=1):
+def gaussian_blur(x, kernel_size=3, sigma=0.5):
     x = einx.rearrange("... h w d -> ... d h w", x)
 
     x_blurred = torchvision.transforms.GaussianBlur(kernel_size, sigma=sigma)(x)
@@ -50,8 +50,10 @@ def gaussian_blur(x, kernel_size=3, sigma=1):
     return x
 
 
-def scale_to_zero_one(x):
-    return (x - x.min()) / (x.max() - x.min())
+def scale_to_zero_one(x, q=0.99):
+    max = torch.quantile(x, q)
+    min = torch.quantile(x, 1 - q)
+    return ((x - min) / (max - min)).clip(0, 1)
 
 
 def hsl_to_rgb(x):
