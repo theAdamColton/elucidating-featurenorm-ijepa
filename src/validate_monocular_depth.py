@@ -178,6 +178,8 @@ def validate_monocular_depth_prediction(
             .map_dict(depth=TorchImageResizer(validation_image_size))
             .map_dict(depth=_squeeze_channels)
             .to_tuple("pixel_values", "token_ids", "depth")
+            .with_length(train_dataset_length // batch_size)
+            .with_epoch(train_dataset_length // batch_size)
         )
         return dl
 
