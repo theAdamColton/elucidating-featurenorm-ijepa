@@ -335,14 +335,16 @@ def get_simple_dataloader(
     if seed is not None:
         shuffle_rng = random.Random(seed)
 
-    dataloader = (
-        wds.WebLoader(dataset, num_workers=num_workers, batch_size=None)
-        .unbatched()
-        .shuffle(
+    dataloader = wds.WebLoader(
+        dataset, num_workers=num_workers, batch_size=None
+    ).unbatched()
+
+    if is_training:
+        dataloader = dataloader.shuffle(
             size=shuffle_size_samples, initial=shuffle_size_samples, rng=shuffle_rng
         )
-        .batched(batch_size)
-    )
+
+    dataloader = dataloader.batched(batch_size)
 
     return dataloader
 

@@ -159,12 +159,19 @@ def validate_monocular_depth_prediction(
 
     def _get_depth_dataloader(pattern, is_training=True):
         shuffle_size_samples = 1000
+
+        if not is_training:
+            seed = 42
+        else:
+            seed = None
+
         dl = (
             get_simple_dataloader(
                 pattern,
                 is_training=is_training,
                 shuffle_size_samples=shuffle_size_samples,
                 image_column_name=image_column_name,
+                seed=seed,
                 batch_size=batch_size,
                 image_size=validation_image_size,
                 patch_size=patch_size,
