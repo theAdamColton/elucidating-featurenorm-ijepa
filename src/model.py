@@ -148,8 +148,12 @@ class RunningBatchNorm(nn.Module):
                 self.is_initted.fill_(1)
 
             elif need_update:
-                self.running_mean.lerp_(mean, 1 - self.beta)
-                self.running_std.lerp_(std, 1 - self.beta)
+
+                def update(p, w):
+                    return p.float().lerp(w.float(), 1 - self.beta).to(p.dtype)
+
+                self.running_mean.copy_(update(self.running_mean, mean))
+                self.running_std.copy_(update(self.running_std, std))
 
         x = einx.subtract("... d, d", x, self.running_mean)
         x = einx.divide("... d, d", x, self.running_std.clamp(self.eps))

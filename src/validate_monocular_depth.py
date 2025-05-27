@@ -137,7 +137,7 @@ def validate_monocular_depth_prediction(
     patch_size: int = 16,
     validation_image_size: int = 256,
     batch_size: int = 256,
-    num_workers: int = 4,
+    num_workers: int = 0,
     train_dataset_length: int = None,
     train_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-train-{00000..00047}.tar",
     val_dataset_pattern: str = "/nvme/nyu-depthv2-wds/nyu-depth-val-00000.tar",
@@ -158,8 +158,7 @@ def validate_monocular_depth_prediction(
     )
 
     def _get_depth_dataloader(pattern, is_training=True):
-        # To reduce memory usage
-        shuffle_size_samples = 256
+        shuffle_size_samples = 1000
         dl = (
             get_simple_dataloader(
                 pattern,
@@ -178,9 +177,13 @@ def validate_monocular_depth_prediction(
             .map_dict(depth=TorchImageResizer(validation_image_size))
             .map_dict(depth=_squeeze_channels)
             .to_tuple("pixel_values", "token_ids", "depth")
-            .with_length(train_dataset_length // batch_size)
-            .with_epoch(train_dataset_length // batch_size)
         )
+
+        if is_training:
+            dl = dl.with_length(train_dataset_length // batch_size).with_epoch(
+                train_dataset_length // batch_size
+            )
+
         return dl
 
     encoder = model.ema_encoder
@@ -215,6 +218,7 @@ def validate_monocular_depth_prediction(
             npw=validation_image_size // patch_size,
         )
 
+        # depth hat is (b 1 lh lw)
         depth_hat = dpt_head(features)
 
         _, h, w = depth.shape
