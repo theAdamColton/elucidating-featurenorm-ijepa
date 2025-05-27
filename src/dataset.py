@@ -744,11 +744,13 @@ def get_context_target_dataloader(
         resizer_rng = random.Random(rng.randbytes(16))
         splitter_rng = random.Random(rng.randbytes(16))
         shuffle_rng = random.Random(rng.randbytes(16))
+        sample_id_adder_rng = random.Random(rng.randbytes(16))
     else:
         rng = None
         resizer_rng = None
         splitter_rng = None
         shuffle_rng = None
+        sample_id_adder_rng = None
 
     dataset = (
         _get_image_dataset(
@@ -761,7 +763,7 @@ def get_context_target_dataloader(
         )
         .select(ImageSizeFilter(config.min_side_length))
         # Assign a unique sample id to each row
-        .compose(assign_sample_ids())
+        .compose(assign_sample_ids(rng=sample_id_adder_rng))
     )
 
     dataset = (

@@ -426,6 +426,11 @@ class Trainer:
         for _ in range(self.conf.num_epochs):
             self.train_one_epoch(dataloader_stream, prog_bar)
 
+            # TODO
+            # This is a hack to avoid memory usage creeping up
+            # from dataloader workers never closing tar files
+            gc.collect()
+
             is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs - 1
             should_validate = (
                 self.conf.test_mode
