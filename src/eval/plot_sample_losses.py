@@ -92,7 +92,7 @@ def plot_sample_losses(
     all_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
 
     # Compute the loss several times, each time using a different context and target
-    iters = 200
+    iters = 500
 
     for i in tqdm(range(iters), "computing loss..."):
         # Shuffle the patches, to create new random sets of context
@@ -217,14 +217,17 @@ def plot_sample_losses(
             sample_loss_image = torchvision.transforms.Resize(
                 (image.shape[1], image.shape[2])
             )(sample_loss_image)
-            sample_loss_image = sample_loss_image.squeeze(0)
             sample_loss_image = scale_to_zero_one(sample_loss_image)
+
+            # Color multiply
+            blend_image = image * sample_loss_image
+
+            # Hot colormap
+            sample_loss_image = sample_loss_image.squeeze(0)
             sample_loss_image = plt.cm.hot(sample_loss_image)[..., :3]
             sample_loss_image = einx.rearrange("h w c -> c h w", sample_loss_image)
             sample_loss_image = torch.from_numpy(sample_loss_image)
 
-            # Color multiply
-            blend_image = image * sample_loss_image
             image = torch.cat((image, blend_image, sample_loss_image), 2)
             image = (image.clip(0, 1) * 255).to(torch.uint8)
 
