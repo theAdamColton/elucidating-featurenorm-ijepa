@@ -88,23 +88,25 @@ def plot_sample_losses(
             loss_images[id] = loss_image
             loss_counts[id] = loss_count
 
+    all_patches = torch.cat((x_patches, y_patches), 1)
+    all_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
+
     # Compute the loss several times, each time using a different context and target
     iters = 200
 
     for i in tqdm(range(iters), "computing loss..."):
-        all_patches = torch.cat((x_patches, y_patches), 1)
-        all_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
-
         # Shuffle the patches, to create new random sets of context
         # and target tokens
         # Note, that this isn't windowed masking like in the
         # official context-target dataset
 
         b, s, d = all_patches.shape
-        indices = torch.rand(b, s).argsort(dim=-1)
-        shuffled_patches = einx.get_at("b [s] d, b n -> b n d", all_patches, indices)
+        random_indices = torch.rand(b, s).argsort(dim=-1)
+        shuffled_patches = einx.get_at(
+            "b [s] d, b n -> b n d", all_patches, random_indices
+        )
         shuffled_token_ids = einx.get_at(
-            "b [s] nd, b n -> b n nd", all_token_ids, indices
+            "b [s] nd, b n -> b n nd", all_token_ids, random_indices
         )
 
         x_patches, y_patches = (
@@ -154,12 +156,11 @@ def plot_sample_losses(
 
                     # Update the loss image
                     loss_image = loss_images[sample_id]
-                    loss_count = loss_images[sample_id]
-
-                    for (hid, wid), loss in zip(
+                    loss_count = loss_counts[sample_id]
+                    for (hid, wid), token_loss in zip(
                         sample_position_ids, sample_tokenwise_loss
                     ):
-                        loss_image[hid, wid] += loss
+                        loss_image[hid, wid] += token_loss
                         loss_count[hid, wid] += 1
 
                     # Measure the mean sample loss, and the variance of the sample loss
@@ -223,7 +224,8 @@ def plot_sample_losses(
             sample_loss_image = torch.from_numpy(sample_loss_image)
 
             # Color multiply
-            image = image * sample_loss_image
+            blend_image = image * sample_loss_image
+            image = torch.cat((image, blend_image, sample_loss_image), 2)
             image = (image.clip(0, 1) * 255).to(torch.uint8)
 
             image_save_path = (
