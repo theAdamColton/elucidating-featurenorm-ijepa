@@ -12,8 +12,10 @@ import torch
 
 import torch.nn.functional as F
 import tensorset as ts
+
 from src.dataset import MASK_SAMPLE_ID
 from src.utils import get_viz_output_path
+from src.eval.utils import scale_to_zero_one
 
 
 def prepare_context_target_batch(batch, device, dtype):
@@ -48,12 +50,6 @@ def gaussian_blur(x, kernel_size=3, sigma=0.5):
     x = einx.rearrange("... d h w -> ... h w d", x)
 
     return x
-
-
-def scale_to_zero_one(x, q=0.99):
-    max = torch.quantile(x, q)
-    min = torch.quantile(x, 1 - q)
-    return ((x - min) / (max - min)).clip(0, 1)
 
 
 def hsl_to_rgb(x):

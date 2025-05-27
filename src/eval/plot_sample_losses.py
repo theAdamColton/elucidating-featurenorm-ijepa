@@ -1,10 +1,13 @@
+from tqdm import tqdm
 import torch
 import einx
 import torchvision
 import matplotlib.pyplot as plt
 import tensorset as ts
+
 from src.dataset import MASK_SAMPLE_ID
 from src.utils import get_viz_output_path
+from src.eval.utils import scale_to_zero_one
 
 
 def prepare_context_target_batch(batch, device, dtype):
@@ -54,16 +57,16 @@ def plot_sample_losses(
 
     b, x_patches_length, d = x_patches.shape
 
-    sample_ids = torch.cat((x_token_ids, y_token_ids), 1)[..., 0]
+    element_sample_ids = torch.cat((x_token_ids, y_token_ids), 1)[..., 0]
 
     batch_unique_sample_ids = []
     for i in range(b):
-        unique_sample_ids = torch.unique(sample_ids[i]).tolist()
+        unique_sample_ids = torch.unique(element_sample_ids[i]).tolist()
         if MASK_SAMPLE_ID in unique_sample_ids:
             unique_sample_ids.remove(MASK_SAMPLE_ID)
         batch_unique_sample_ids.append(unique_sample_ids)
 
-    sample_losses = [
+    sample_mean_losses = [
         torch.zeros(len(unique_sample_ids))
         for unique_sample_ids in batch_unique_sample_ids
     ]
@@ -72,10 +75,23 @@ def plot_sample_losses(
         for unique_sample_ids in batch_unique_sample_ids
     ]
 
-    # Compute the loss several times, each time using a different context and target
-    iters = 1
+    # Initialize sample loss images
+    loss_images = dict()
+    loss_counts = dict()
+    for i in range(b):
+        for id in batch_unique_sample_ids[i]:
+            mask = token_ids[i, :, 0] == id
+            sample_position_ids = token_ids[i, :, -2:][mask]
+            height, width = sample_position_ids.amax(0) + 1
+            loss_image = torch.zeros(height, width)
+            loss_count = torch.zeros(height, width)
+            loss_images[id] = loss_image
+            loss_counts[id] = loss_count
 
-    for i in range(iters):
+    # Compute the loss several times, each time using a different context and target
+    iters = 200
+
+    for i in tqdm(range(iters), "computing loss..."):
         all_patches = torch.cat((x_patches, y_patches), 1)
         all_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
 
@@ -86,16 +102,18 @@ def plot_sample_losses(
 
         b, s, d = all_patches.shape
         indices = torch.rand(b, s).argsort(dim=-1)
-        all_patches = einx.get_at("b [s] d, b n -> b n d", all_patches, indices)
-        all_token_ids = einx.get_at("b [s] nd, b n -> b n nd", all_token_ids, indices)
+        shuffled_patches = einx.get_at("b [s] d, b n -> b n d", all_patches, indices)
+        shuffled_token_ids = einx.get_at(
+            "b [s] nd, b n -> b n nd", all_token_ids, indices
+        )
 
         x_patches, y_patches = (
-            all_patches[:, :x_patches_length],
-            all_patches[:, x_patches_length:],
+            shuffled_patches[:, :x_patches_length],
+            shuffled_patches[:, x_patches_length:],
         )
         x_token_ids, y_token_ids = (
-            all_token_ids[:, :x_patches_length],
-            all_token_ids[:, x_patches_length:],
+            shuffled_token_ids[:, :x_patches_length],
+            shuffled_token_ids[:, x_patches_length:],
         )
 
         patches = torch.cat((x_patches, y_patches), 1)
@@ -116,6 +134,7 @@ def plot_sample_losses(
         tokenwise_loss = result_dict["tokenwise_loss"].cpu().float()
         # target sample_ids is batch repeated sequence ids fed to the predictor
         target_sample_ids = result_dict["predictor_target_token_ids"][..., 0].cpu()
+        target_position_ids = result_dict["predictor_target_token_ids"][..., -2:].cpu()
 
         tokenwise_loss = einx.mean("rb ys [d]", tokenwise_loss)
 
@@ -123,11 +142,25 @@ def plot_sample_losses(
         for i in range(model.config.predictor_batch_repeat):
             for j in range(b):
                 batch_index = i * b + j
-                sample_ids = target_sample_ids[batch_index]
+                element_sample_ids = target_sample_ids[batch_index]
+                element_position_ids = target_position_ids[batch_index]
                 for k, sample_id in enumerate(batch_unique_sample_ids[j]):
-                    mask = sample_ids == sample_id
+                    mask = element_sample_ids == sample_id
                     if not mask.any():
                         continue
+
+                    sample_position_ids = element_position_ids[mask]
+                    sample_tokenwise_loss = tokenwise_loss[batch_index][mask]
+
+                    # Update the loss image
+                    loss_image = loss_images[sample_id]
+                    loss_count = loss_images[sample_id]
+
+                    for (hid, wid), loss in zip(
+                        sample_position_ids, sample_tokenwise_loss
+                    ):
+                        loss_image[hid, wid] += loss
+                        loss_count[hid, wid] += 1
 
                     # Measure the mean sample loss, and the variance of the sample loss
                     sample_loss = tokenwise_loss[batch_index, mask].mean()
@@ -137,7 +170,7 @@ def plot_sample_losses(
                     # TODO! This doesnt handle the special case
                     # where sometimes a sample might not be included
                     # in the loss for a batch because it is randomly dropped
-                    sample_losses[j][k] += sample_loss / iters
+                    sample_mean_losses[j][k] += sample_loss / iters
                     sample_losses_variance[j][k] += sample_loss_variance / iters
 
     # Save an image for each sample
@@ -151,11 +184,11 @@ def plot_sample_losses(
             if not mask.any():
                 continue
             sample_patches = all_patches[i, mask]
-            sample_ids = all_token_ids[i, mask]
+            element_sample_ids = all_token_ids[i, mask]
 
             sample_patches = (sample_patches + 1) / 2
 
-            sample_position_ids = sample_ids[:, -2:]
+            sample_position_ids = element_sample_ids[:, -2:]
             nph, npw = (sample_position_ids.amax(0) + 1).tolist()
             unpacked_patches = torch.zeros(nph, npw, d)
 
@@ -169,13 +202,29 @@ def plot_sample_losses(
                 pw=patch_size,
                 c=num_image_channels,
             )
-            image = (image.clip(0, 1) * 255).to(torch.uint8)
 
-            sample_loss = sample_losses[i][j].item()
+            sample_loss = sample_mean_losses[i][j].item()
             sample_loss = round(sample_loss, 5)
 
             sample_loss_variance = sample_losses_variance[i][j].item()
             sample_loss_variance = round(sample_loss_variance, 5)
+
+            sample_loss_image = loss_images[sample_id]
+            sample_loss_count = loss_counts[sample_id]
+            sample_loss_image = sample_loss_image / sample_loss_count.clip(1)
+            sample_loss_image = sample_loss_image.unsqueeze(0)
+            sample_loss_image = torchvision.transforms.Resize(
+                (image.shape[1], image.shape[2])
+            )(sample_loss_image)
+            sample_loss_image = sample_loss_image.squeeze(0)
+            sample_loss_image = scale_to_zero_one(sample_loss_image)
+            sample_loss_image = plt.cm.hot(sample_loss_image)[..., :3]
+            sample_loss_image = einx.rearrange("h w c -> c h w", sample_loss_image)
+            sample_loss_image = torch.from_numpy(sample_loss_image)
+
+            # Color multiply
+            image = image * sample_loss_image
+            image = (image.clip(0, 1) * 255).to(torch.uint8)
 
             image_save_path = (
                 output_path
@@ -188,7 +237,7 @@ def plot_sample_losses(
 
     # Plot the distribution of the losses
     all_losses = []
-    for batch in sample_losses:
+    for batch in sample_mean_losses:
         all_losses.extend(batch.tolist())
 
     all_losses_variance = []
