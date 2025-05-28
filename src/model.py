@@ -72,31 +72,40 @@ def get_1d_rotary_pos_embed(
 
     Args:
         dim (`int`): Dimension of the frequency tensor.
-        pos (`np.ndarray` or `int`): Position indices for the frequency tensor. [S] or scalar
+        pos (`torch.Tensor`): Floating point position ids for the frequency tensor. [...]
         theta (`float`, *optional*, defaults to 10000.0):
             Scaling factor for frequency computation. Defaults to 10000.0.
     Returns:
-        `torch.Tensor`: Precomputed frequency tensor with complex exponentials. [S, D/2]
+        `torch.Tensor`: Precomputed frequency tensor with complex exponentials. [... D]
+            Where D==dim
     """
+    device = pos.device
     assert dim % 2 == 0
 
-    freqs = 1.0 / (
-        theta
-        ** (
-            torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[
-                : (dim // 2)
-            ]
-            / dim
-        )
-    )  # [D/2]
-    freqs = einx.dot("... s, d2 -> ... s d2", pos, freqs)  # [..., s, D/2]
-    freqs_cos = freqs.cos().repeat_interleave(2, dim=-1).float()  # [..., s, D]
-    freqs_sin = freqs.sin().repeat_interleave(2, dim=-1).float()  # [..., s, D]
+    with torch.autocast(device.type, enabled=False):
+        freqs = 1.0 / (
+            theta
+            ** (
+                torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[
+                    : (dim // 2)
+                ]
+                / dim
+            )
+        )  # [D/2]
+
+        freqs = einx.dot("... s, d2 -> ... s d2", pos, freqs)  # [..., s, D/2]
+        freqs_cos = freqs.cos().repeat_interleave(2, dim=-1).float()  # [..., s, D]
+        freqs_sin = freqs.sin().repeat_interleave(2, dim=-1).float()  # [..., s, D]
+
     return freqs_cos, freqs_sin
 
 
 class RopePosEmbedND(nn.Module):
-    # modified from https://github.com/black-forest-labs/flux/blob/c00d7c60b085fce8058b9df845e036090873f2ce/src/flux/modules/layers.py#L11
+    """
+    Adapted from:
+    https://github.com/huggingface/diffusers/blob/54cddc1e127a481ecb20179acf4a57f5421f4626/src/diffusers/models/embeddings.py#L962
+    """
+
     def __init__(self, theta=10000, axes_dim=(32, 32)):
         super().__init__()
         self.theta = theta
@@ -113,8 +122,8 @@ class RopePosEmbedND(nn.Module):
             )
             cos_out.append(cos)
             sin_out.append(sin)
-        freqs_cos = torch.cat(cos_out, dim=-1).to(ids.device)
-        freqs_sin = torch.cat(sin_out, dim=-1).to(ids.device)
+        freqs_cos = torch.cat(cos_out, dim=-1)
+        freqs_sin = torch.cat(sin_out, dim=-1)
         return freqs_cos, freqs_sin
 
 

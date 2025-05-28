@@ -9,7 +9,7 @@ conf:
   num_workers: 4
 
   num_register_tokens: 0
-  validate_every_num_epochs: 40
+  validate_every_num_epochs: 50
 
   model:
 

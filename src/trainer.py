@@ -39,12 +39,14 @@ class Trainer:
     def __init__(
         self,
         model: IJEPAModel,
+        grad_scaler: torch.GradScaler,
         optimizer: torch.optim.Optimizer,
         training_state: dict,
         conf: MainConfig,
         dataloader,
     ):
         self.model = model
+        self.grad_scaler = grad_scaler
         self.conf = conf
         self.dataloader = dataloader
         self.training_state = training_state
@@ -115,6 +117,7 @@ class Trainer:
         torch.save(
             {
                 "training_state": self.training_state,
+                "grad_scaler": self.grad_scaler.state_dict(),
                 "model": (
                     self.model._orig_mod.state_dict()
                     if hasattr(self.model, "_orig_mod")
@@ -257,8 +260,9 @@ class Trainer:
 
         loss = result_dict["loss"]
 
-        loss.backward()
-        self.optimizer.step()
+        self.grad_scaler.scale(loss).backward()
+        self.grad_scaler.step(self.optimizer)
+        self.grad_scaler.update()
         self.optimizer.zero_grad()
 
         lr = self.lr

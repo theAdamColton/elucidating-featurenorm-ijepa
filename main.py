@@ -47,6 +47,8 @@ def main(conf: MainConfig = MainConfig()):
         weight_decay=0.05,
     )
 
+    grad_scaler = torch.GradScaler()
+
     training_state = dict(global_step=0, epoch=0, num_total_samples=0)
 
     @contextmanager
@@ -62,6 +64,12 @@ def main(conf: MainConfig = MainConfig()):
                 map_location=conf.torch_device,
                 weights_only=False,
             )
+
+            if "grad_scaler" in d:
+                grad_scaler.load_state_dict(d["grad_scaler"])
+            else:
+                print("Warning! grad_scaler not found in checkpoint file!")
+
             model.load_state_dict(d["model"], strict=False)
             optimizer.load_state_dict(d["optimizer"])
             training_state.update(d["training_state"])
@@ -149,6 +157,7 @@ def main(conf: MainConfig = MainConfig()):
     elif conf.mode == "train":
         trainer = Trainer(
             model=model,
+            grad_scaler=grad_scaler,
             optimizer=optimizer,
             training_state=training_state,
             conf=conf,
