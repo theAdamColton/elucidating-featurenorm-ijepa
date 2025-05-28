@@ -109,14 +109,14 @@ class DPTDepthModel(nn.Module):
         self.conv2 = nn.Conv2d(
             input_feature_size // 2, 32, kernel_size=3, stride=1, padding=1
         )
-        self.relu = nn.ReLU()
+        self.act_fn = nn.GELU()
         self.depth_head = nn.Conv2d(32, 1, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
         x = self.conv1(x)
         x = F.interpolate(x, scale_factor=2, mode="bilinear")
         x = self.conv2(x)
-        x = self.relu(x)
+        x = self.act_fn(x)
         x = self.depth_head(x)
 
         return x
@@ -225,6 +225,8 @@ def validate_monocular_depth_prediction(
             npw=validation_image_size // patch_size,
         )
 
+        features = features.float()
+
         # depth hat is (b 1 lh lw)
         depth_hat = dpt_head(features)
 
@@ -236,11 +238,11 @@ def validate_monocular_depth_prediction(
 
         scaled_depth, gt_shift, gt_scale = scale_and_shift_depth(depth)
 
-        loss_ssi = F.mse_loss(scaled_depth, depth_hat)
+        loss_ssi = F.smooth_l1_loss(scaled_depth, depth_hat)
 
         loss_reg = multiscale_gradient_loss(scaled_depth, depth_hat)
 
-        alpha = 0.5
+        alpha = 0.2
 
         loss = loss_ssi + alpha * loss_reg
 
@@ -277,7 +279,7 @@ def validate_monocular_depth_prediction(
                     device=device, dtype=dtype, non_blocking=True
                 )
                 token_ids = token_ids.to(device=device, non_blocking=True)
-                depth = depth.to(device=device, dtype=dtype, non_blocking=True)
+                depth = depth.to(device=device, non_blocking=True)
                 with autocast_fn():
                     losses, *_ = _compute_losses(pixel_values, token_ids, depth)
 
@@ -317,7 +319,7 @@ def validate_monocular_depth_prediction(
     for pixel_values, token_ids, depth in tqdm(validation_dataloader):
         pixel_values = pixel_values.to(device=device, dtype=dtype, non_blocking=True)
         token_ids = token_ids.to(device=device, non_blocking=True)
-        depth = depth.to(device=device, dtype=dtype, non_blocking=True)
+        depth = depth.to(device=device, non_blocking=True)
 
         with torch.inference_mode():
             with autocast_fn():
