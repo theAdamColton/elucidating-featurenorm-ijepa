@@ -457,6 +457,52 @@ class Predictor(nn.Module):
         return x
 
 
+def get_random_idx(
+    r, b, s, capacity=0.5, mask=None, device=torch.device("cuda"), dtype=torch.float32
+):
+    """
+
+    Sample r sets of independent random indices within the range of s.
+
+    This function generates random indices that can be used to index into a sequence of length s.
+    It optionally excludes positions that are marked as True in the provided mask.
+    """
+
+    if s * capacity * r > s:
+        raise ValueError(
+            f"ValueError: The product of s ({s}), capacity ({capacity}), and r ({r}) "
+            f"must be less than or equal to s ({s}). However, the calculated product is {s * capacity * r}, "
+            f"which is greater than s ({s})"
+        )
+
+    ss = int(round(s * capacity))
+    if s % ss != 0:
+        raise ValueError(
+            f"The sequence length {s} with capacity {capacity} "
+            f"results in a subsampled sequence length {ss} that is not divisible by {r}. "
+            f"Please ensure that the sequence length is divisible by the subsampled capacity."
+        )
+
+    scores = torch.rand(
+        b,
+        s,
+        device=device,
+        dtype=dtype,
+    )
+
+    if mask is not None:
+        scores.masked_fill_(mask, -1)
+
+    idx = scores.argsort(descending=True)
+    idx = einx.rearrange("b (rr ss) -> rr b ss", idx, ss=ss)
+    # rr b xs -> r b ss
+    idx = idx[:r]
+
+    idx = einx.rearrange("r b ss -> (r b) ss", idx)
+
+    return idx
+
+
 @dataclass
 class IJEPAConfig:
     encoder: EncoderConfig = field(default_factory=lambda: EncoderConfig())
@@ -569,6 +615,45 @@ class IJEPAModel(nn.Module):
         x_token_ids = token_ids[:, :context_sequence_length]
         x, *_ = self.encoder(x, x_token_ids)
 
+        if config.should_attempt_mask_dropping:
+            is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
+        else:
+            is_ctx_padding = None
+
+        # TODO
+        # Try to give the predictor at least
+        # one token for context and one token for prediction from each sample
+        # otherwise the loss for some samples will be sometimes undefined
+
+        # (r b k)
+        context_idx = get_random_idx(
+            r=config.predictor_batch_repeat,
+            b=b,
+            s=context_sequence_length,
+            capacity=config.predictor_context_capacity,
+            mask=is_ctx_padding,
+            device=device,
+            dtype=dtype,
+        )
+
+        if config.should_attempt_mask_dropping:
+            # Try to prevent the predictor from being given padding tokens
+            # as prediction targets
+            is_target_padding = y_token_ids[..., 0] == MASK_SAMPLE_ID
+        else:
+            is_target_padding = None
+
+        # (rb m)
+        target_idx = get_random_idx(
+            r=config.predictor_batch_repeat,
+            b=b,
+            s=ts,
+            capacity=config.predictor_target_capacity,
+            mask=is_target_padding,
+            device=device,
+            dtype=dtype,
+        )
+
         # Repeat tensors for predictor
         target_hidden_states = einx.rearrange(
             "b ts d -> (r b) ts d",
@@ -583,44 +668,12 @@ class IJEPAModel(nn.Module):
             "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
         )
 
-        # TODO
-        # Try to give the predictor at least
-        # one token for context and one token for prediction from each sample
+        # The predictor use random subsets of the context
+        # to predict random subsets of the target
+        _, num_ctx_tokens = context_idx.shape
+        _, num_target_tokens = target_idx.shape
 
-        # The predictor uses a random subset of the context
-        # to predict a random subset of the target
-        num_ctx_tokens = int(
-            round(context_sequence_length * config.predictor_context_capacity)
-        )
-        num_target_tokens = int(round(ts * config.predictor_target_capacity))
-
-        # Random scores for picking context tokens to be used by the predictor
-        ctx_scores = torch.rand(
-            config.predictor_batch_repeat * b,
-            context_sequence_length,
-            device=device,
-            dtype=dtype,
-        )
-
-        if config.should_attempt_mask_dropping:
-            # Try to prevent the predictor from being given padding tokens
-            # as part of context
-            is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
-            ctx_scores.masked_fill_(is_ctx_padding, -1)
-
-        context_idx = ctx_scores.topk(num_ctx_tokens, dim=-1, sorted=False).indices
-
-        target_scores = torch.rand(
-            config.predictor_batch_repeat * b, ts, device=device, dtype=dtype
-        )
-
-        if config.should_attempt_mask_dropping:
-            # Try to prevent the predictor from being given padding tokens
-            # as prediction targets
-            is_target_padding = y_token_ids[..., 0] == MASK_SAMPLE_ID
-            target_scores.masked_fill_(is_target_padding, -1)
-
-        target_idx = target_scores.topk(num_target_tokens, dim=-1, sorted=False).indices
+        # Gather subsets for the predictor
 
         # rb [xs] d, rb k -> rb k d
         ctx = x.gather(1, expand_trailing(context_idx, x))
@@ -643,7 +696,7 @@ class IJEPAModel(nn.Module):
         rb, ps, d = x.shape
 
         prediction_mask = torch.zeros(
-            config.predictor_batch_repeat * b,
+            rb,
             ps,
             dtype=torch.bool,
             device=device,
@@ -654,10 +707,6 @@ class IJEPAModel(nn.Module):
         predictions = x[:, num_ctx_tokens:]
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")
-
-        # TODO
-        # The predictor here is predicting the teacher's register tokens
-        # Should these registers be upweighted? Or excluded from loss
 
         # Exclude masked tokens from the loss
         target_sample_ids = combined_token_ids[:, num_ctx_tokens:, 0]

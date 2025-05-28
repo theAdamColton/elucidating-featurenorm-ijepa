@@ -50,10 +50,10 @@ conf:
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.25
-    predictor_target_capacity: 0.25
+    predictor_context_capacity: 0.125
+    predictor_target_capacity: 0.125
 
   context_target_dataset:
-    min_context_capacity: 0.25
-    max_context_capacity: 0.5
+    min_context_capacity: 0.5
+    max_context_capacity: 0.75
     absolute_max_context_capacity: 0.5
