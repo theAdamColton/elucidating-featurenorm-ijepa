@@ -466,6 +466,8 @@ def get_random_idx(
 
     This function generates random indices that can be used to index into a sequence of length s.
     It optionally excludes positions that are marked as True in the provided mask.
+
+    TODO use clustering to pick sets
     """
 
     if s * capacity * r > s:
