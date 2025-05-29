@@ -5,7 +5,7 @@ conf:
   dtype: bfloat16
   device: cuda
 
-  batch_size: 384
+  batch_size: 320
   num_workers: 4
 
   num_register_tokens: 0
@@ -46,14 +46,14 @@ conf:
         norm_mode: layernorm
       norm_out_mode: layernorm
 
-    predictor_batch_repeat: 8
+    predictor_batch_repeat: 4
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.0625
-    predictor_target_capacity: 0.0625
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
 
   context_target_dataset:
-    min_context_capacity: 0.125
+    min_context_capacity: 0.25
     max_context_capacity: 0.5
     absolute_max_context_capacity: 0.5
