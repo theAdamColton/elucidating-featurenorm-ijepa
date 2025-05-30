@@ -41,6 +41,7 @@ def plot_sample_losses(
     patch_size,
     num_image_channels,
     autocast_fn,
+    window_size,
 ):
     """
     Plot the distribution of losses for each sample in a batch.
@@ -129,6 +130,7 @@ def plot_sample_losses(
                     context_sequence_length=context_sequence_length,
                     return_tokenwise_loss=True,
                     return_predictor_target_token_ids=True,
+                    window_size=window_size,
                 )
 
         # tokenwise loss is the batch repeated loss

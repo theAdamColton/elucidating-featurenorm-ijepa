@@ -174,7 +174,6 @@ class RunningBatchNorm(nn.Module):
 class EncoderConfig:
     input_size: int = 768
 
-    sliding_window_size: int = 5
     num_transformer_blocks: int = 10
     block_config: TransformerBlockConfig = field(
         default_factory=lambda: TransformerBlockConfig()
@@ -511,7 +510,7 @@ def get_random_idx_with_replacement(
         scores.masked_fill_(mask, -1)
 
     k = int(round(s * capacity))
-    idx = torch.topk(scores, k, sorted=False)
+    idx = torch.topk(scores, k, sorted=False).indices
     idx = einx.rearrange("r b k -> (r b) k", idx)
 
     return idx
@@ -532,8 +531,6 @@ def get_random_idx_without_replacement(
 
     This function generates random indices that can be used to index into a sequence of length s.
     It optionally excludes positions that are marked as True in the provided mask.
-
-    TODO use clustering to pick sets
     """
 
     if s * capacity * r > s:
@@ -589,6 +586,9 @@ class IJEPAConfig:
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
 
+    sample_predictor_context_with_replacement: bool = True
+    sample_predictor_targets_with_replacement: bool = True
+
 
 class IJEPAModel(nn.Module):
     def __init__(self, config=IJEPAConfig()):
@@ -612,6 +612,7 @@ class IJEPAModel(nn.Module):
         self,
         patches: torch.Tensor,
         token_ids: torch.Tensor,
+        window_size: int = 1,
         context_sequence_length: int = None,
         return_smooth_rank=False,
         return_tokenwise_loss=False,
@@ -627,6 +628,9 @@ class IJEPAModel(nn.Module):
         rb: the total batch size (b * r) of the predictor
         ps: Predictor's input sequence length
         nd: the number of channels in the token ids, should be 4
+        nwx: Number of windows in the context
+        nwy: Number of windows in the target tokens to be predicted
+        ws: Number of tokens per window = window_size**2
         """
 
         config = self.config
@@ -685,69 +689,121 @@ class IJEPAModel(nn.Module):
         x_token_ids = token_ids[:, :context_sequence_length]
         x, *_ = self.encoder(x, x_token_ids)
 
-        # Get idx indicating context and target regions for the predictor
+        # Window patches and get idx indicating context and target regions for the predictor
+        # This expects that the input data is already arranged in windows
+        # of window_size
+        num_tokens_per_window = window_size**2
+        x = einx.rearrange("b (nwx ws) d -> b nwx ws d", x, ws=num_tokens_per_window)
+        x_token_ids = einx.rearrange(
+            "b (nwx ws) nd -> b nwx ws nd", x_token_ids, ws=num_tokens_per_window
+        )
+        target_hidden_states = einx.rearrange(
+            "b (nwy ws) d -> b nwy ws d", target_hidden_states, ws=num_tokens_per_window
+        )
+        y_token_ids = einx.rearrange(
+            "b (nwy ws) nd -> b nwy ws nd", y_token_ids, ws=num_tokens_per_window
+        )
+
         if config.should_attempt_mask_dropping:
+            # Try to prevent the predictor from being given windows
+            # that are filled entirely with padding tokens
             is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
+            is_ctx_padding = einx.all("b nwx [ws]", is_ctx_padding)
         else:
             is_ctx_padding = None
 
-        # (rb k)
-        context_idx = get_random_idx_without_replacement(
-            r=config.predictor_batch_repeat,
-            b=b,
-            s=context_sequence_length,
-            capacity=config.predictor_context_capacity,
-            mask=is_ctx_padding,
-            device=device,
-            dtype=dtype,
-        )
+        ctx_num_windows = x.shape[1]
+        if config.sample_predictor_context_with_replacement:
+            # (rb k)
+            context_idx = get_random_idx_with_replacement(
+                r=config.predictor_batch_repeat,
+                b=b,
+                s=ctx_num_windows,
+                capacity=config.predictor_context_capacity,
+                mask=is_ctx_padding,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            # (rb k)
+            context_idx = get_random_idx_without_replacement(
+                r=config.predictor_batch_repeat,
+                b=b,
+                s=ctx_num_windows,
+                capacity=config.predictor_context_capacity,
+                mask=is_ctx_padding,
+                device=device,
+                dtype=dtype,
+            )
 
         if config.should_attempt_mask_dropping:
-            # Try to prevent the predictor from being given padding tokens
-            # as prediction targets
+            # Try to prevent the predictor from being given windows
+            # that are filled entirely with padding tokens
             is_target_padding = y_token_ids[..., 0] == MASK_SAMPLE_ID
+            is_target_padding = einx.all("b nwy [ws]", is_target_padding)
         else:
             is_target_padding = None
 
-        # (rb m)
-        target_idx = get_random_idx_without_replacement(
-            r=config.predictor_batch_repeat,
-            b=b,
-            s=target_sequence_length,
-            capacity=config.predictor_target_capacity,
-            mask=is_target_padding,
-            device=device,
-            dtype=dtype,
-        )
+        target_num_windows = target_hidden_states.shape[1]
+        if config.sample_predictor_targets_with_replacement:
+            # (rb m)
+            target_idx = get_random_idx_with_replacement(
+                r=config.predictor_batch_repeat,
+                b=b,
+                s=target_num_windows,
+                capacity=config.predictor_target_capacity,
+                mask=is_target_padding,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            # (rb m)
+            target_idx = get_random_idx_without_replacement(
+                r=config.predictor_batch_repeat,
+                b=b,
+                s=target_num_windows,
+                capacity=config.predictor_target_capacity,
+                mask=is_target_padding,
+                device=device,
+                dtype=dtype,
+            )
 
         # Repeat tensors for predictor
+        x = einx.rearrange("b ... -> (r b) ...", x, r=config.predictor_batch_repeat)
+        x_token_ids = einx.rearrange(
+            "b ... -> (r b) ...", x_token_ids, r=config.predictor_batch_repeat
+        )
         target_hidden_states = einx.rearrange(
-            "b ts d -> (r b) ts d",
+            "b ... -> (r b) ...",
             target_hidden_states,
             r=config.predictor_batch_repeat,
         )
         y_token_ids = einx.rearrange(
-            "b ts nd -> (r b) ts nd", y_token_ids, r=config.predictor_batch_repeat
-        )
-        x = einx.rearrange("b xs d -> (r b) xs d", x, r=config.predictor_batch_repeat)
-        x_token_ids = einx.rearrange(
-            "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
+            "b ... -> (r b) ...", y_token_ids, r=config.predictor_batch_repeat
         )
 
         # Gather subsets for the predictor
 
-        # rb [xs] d, rb k -> rb k d
+        # rb [nwx] ws d, rb k -> rb k ws d
         ctx = x.gather(1, expand_trailing(context_idx, x))
-        # rb [ts] d, rb m -> rb m d
+        # rb [nwy] ws d, rb m -> rb m ws d
         targets = target_hidden_states.gather(
             1, expand_trailing(target_idx, target_hidden_states)
         )
 
-        # rb [xs] nd, rb k -> rb k nd
+        # rb [nwx] ws nd, rb k -> rb k ws nd
         ctx_token_ids = x_token_ids.gather(1, expand_trailing(context_idx, x_token_ids))
-        # rb [ts] nd, rb m -> rb m nd
+        # rb [nwy] ws nd, rb m -> rb m ws nd
         target_token_ids = y_token_ids.gather(
             1, expand_trailing(target_idx, y_token_ids)
+        )
+
+        # Arrange windows back into flattened patches
+        ctx = einx.rearrange("rb k ws d -> rb (k ws) d", ctx)
+        ctx_token_ids = einx.rearrange("rb k ws nd -> rb (k ws) nd", ctx_token_ids)
+        targets = einx.rearrange("rb m ws d -> rb (m ws) d", targets)
+        target_token_ids = einx.rearrange(
+            "rb k ws nd -> rb (k ws) nd", target_token_ids
         )
 
         if config.predictor_upscale_factor > 1:

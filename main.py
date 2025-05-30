@@ -140,6 +140,7 @@ def main(conf: MainConfig = MainConfig()):
             patch_size=patch_size,
             num_image_channels=num_image_channels,
             autocast_fn=autocast_fn,
+            window_size=conf.context_target_dataset.mask_window_size,
         )
 
     elif conf.mode == "visualize-embeddings":

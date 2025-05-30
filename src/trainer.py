@@ -256,6 +256,7 @@ class Trainer:
                 token_ids=token_ids,
                 context_sequence_length=self.conf.context_target_dataset.packer_context_sequence_length,
                 return_smooth_rank=should_log,
+                window_size=self.conf.context_target_dataset.mask_window_size,
             )
 
         loss = result_dict["loss"]
