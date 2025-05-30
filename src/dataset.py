@@ -502,31 +502,33 @@ class ContextTargetSplitter:
                 min_num_context_windows, max_num_context_windows
             )
 
-        # Create a flat idx into x, arrange it into square windows,
-        # and randomly permute it
-        idx = torch.arange(nph * npw)
-        idx = idx.reshape(nph, npw)
-        # (nwh wh) (nww ww) -> nwh nww wh ww
-        idx = patch(idx.unsqueeze(-1), window_size).squeeze(-1)
-        # nwh nww wh ww -> (nwh nww) (wh ww)
-        idx = idx.reshape(-1, tokens_per_window)
-        shuffle_idx = torch.randperm(num_total_windows, generator=self.torch_rng)
-        idx = idx[shuffle_idx]
-        # n (wh ww) -> (n wh ww)
-        idx = idx.reshape(-1)
+        # Patch patches into windows
+        # nph npw d -> nwh nww ws ws d
+        x = patch(x, window_size)
+        # nph npw nd -> nwh nww ws ws nd
+        position_ids = patch(position_ids, window_size)
+
+        # Flatten windows
+        # nwh nww ws ws d -> (nwh nww) ws ws d
+        x = x.reshape(-1, window_size, window_size, d)
+        # nwh nww ws ws nd -> (nwh nww) ws ws nd
+        position_ids = position_ids.reshape(-1, window_size, window_size, nd)
+
+        # Randomly permute windows
+        shuffle_idx = torch.randperm(x.shape[0], generator=self.torch_rng)
+        x = x[shuffle_idx]
+        position_ids = position_ids[shuffle_idx]
 
         num_context_tokens = num_context_windows * tokens_per_window
 
-        # Permute windows of x, and assign them to context or target
+        # Assign x tokens to context or target
 
-        # nph npw d -> (nph npw) d
+        # nw ws ws d -> (nw ws ws) d
         x = x.reshape(-1, d)
-        x = x[idx]
-        x, y = x[:num_context_tokens], x[num_context_tokens:]
-
-        # nph npw nd -> (nph npw) nd
+        # nw ws ws nd -> (nw ws ws) nd
         position_ids = position_ids.reshape(-1, nd)
-        position_ids = position_ids[idx]
+
+        x, y = x[:num_context_tokens], x[num_context_tokens:]
         x_position_ids, y_position_ids = (
             position_ids[:num_context_tokens],
             position_ids[num_context_tokens:],

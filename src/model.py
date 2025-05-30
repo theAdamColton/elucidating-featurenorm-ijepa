@@ -488,8 +488,43 @@ def upscale_token_ids(ids, scale_factor=2):
     return ids
 
 
-def get_random_idx(
-    r, b, s, capacity=0.5, mask=None, device=torch.device("cuda"), dtype=torch.float32
+def get_random_idx_with_replacement(
+    r,
+    b,
+    s,
+    capacity=0.5,
+    mask=None,
+    device=torch.device("cuda"),
+    dtype=torch.float32,
+):
+    scores = torch.rand(
+        r,
+        b,
+        s,
+        device=device,
+        dtype=dtype,
+    )
+
+    if mask is not None:
+        assert b, s == mask.shape
+        mask = mask.unsqueeze(0)
+        scores.masked_fill_(mask, -1)
+
+    k = int(round(s * capacity))
+    idx = torch.topk(scores, k, sorted=False)
+    idx = einx.rearrange("r b k -> (r b) k", idx)
+
+    return idx
+
+
+def get_random_idx_without_replacement(
+    r,
+    b,
+    s,
+    capacity=0.5,
+    mask=None,
+    device=torch.device("cuda"),
+    dtype=torch.float32,
 ):
     """
 
@@ -657,7 +692,7 @@ class IJEPAModel(nn.Module):
             is_ctx_padding = None
 
         # (rb k)
-        context_idx = get_random_idx(
+        context_idx = get_random_idx_without_replacement(
             r=config.predictor_batch_repeat,
             b=b,
             s=context_sequence_length,
@@ -675,7 +710,7 @@ class IJEPAModel(nn.Module):
             is_target_padding = None
 
         # (rb m)
-        target_idx = get_random_idx(
+        target_idx = get_random_idx_without_replacement(
             r=config.predictor_batch_repeat,
             b=b,
             s=target_sequence_length,
