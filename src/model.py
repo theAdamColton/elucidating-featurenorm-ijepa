@@ -466,23 +466,23 @@ def upscale_features(x, scale_factor=2):
 
 def upscale_token_ids(ids, scale_factor=2):
     b, s, m = ids.shape
-    device = ids.device
+    device, dtype = ids.device, ids.dtype
 
     ids = einx.rearrange("b s m-> b s h w m", ids, h=scale_factor, w=scale_factor)
 
-    other_ids, position_ids = ids[..., :-2], ids[..., -2:]
+    ids, position_ids = ids[..., :-2], ids[..., -2:]
     position_ids = position_ids * scale_factor
 
     sub_position_ids = torch.meshgrid(
-        torch.arange(scale_factor, device=device),
-        torch.arange(scale_factor, device=device),
+        torch.arange(scale_factor, device=device, dtype=dtype),
+        torch.arange(scale_factor, device=device, dtype=dtype),
         indexing="ij",
     )
     sub_position_ids = torch.stack(sub_position_ids, -1)
 
     position_ids = einx.add("h w nd, b s h w nd", sub_position_ids, position_ids)
 
-    ids = torch.cat((other_ids, position_ids), -1)
+    ids = torch.cat((ids, position_ids), -1)
     ids = einx.rearrange("b s h w m -> b (s h w) m", ids)
 
     return ids
@@ -571,6 +571,8 @@ class IJEPAModel(nn.Module):
 
         self.predictor = Predictor(config.predictor)
 
+        self.did_forward_once = False
+
     def forward(
         self,
         patches: torch.Tensor,
@@ -648,23 +650,7 @@ class IJEPAModel(nn.Module):
         x_token_ids = token_ids[:, :context_sequence_length]
         x, *_ = self.encoder(x, x_token_ids)
 
-        if config.predictor_upscale_factor > 1:
-            # Upscale
-            x = upscale_features(x, config.predictor_upscale_factor)
-            x_token_ids = upscale_token_ids(
-                x_token_ids, config.predictor_upscale_factor
-            )
-
-            target_hidden_states = upscale_features(
-                target_hidden_states, config.predictor_upscale_factor
-            )
-            y_token_ids = upscale_token_ids(
-                y_token_ids, config.predictor_upscale_factor
-            )
-
-            context_sequence_length = x.shape[1]
-            target_sequence_length = target_hidden_states.shape[1]
-
+        # Get idx indicating context and target regions for the predictor
         if config.should_attempt_mask_dropping:
             is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
         else:
@@ -713,11 +699,6 @@ class IJEPAModel(nn.Module):
             "b xs nd -> (r b) xs nd", x_token_ids, r=config.predictor_batch_repeat
         )
 
-        # The predictor use random subsets of the context
-        # to predict random subsets of the target
-        _, num_ctx_tokens = context_idx.shape
-        _, num_target_tokens = target_idx.shape
-
         # Gather subsets for the predictor
 
         # rb [xs] d, rb k -> rb k d
@@ -734,6 +715,25 @@ class IJEPAModel(nn.Module):
             1, expand_trailing(target_idx, y_token_ids)
         )
 
+        if config.predictor_upscale_factor > 1:
+            # Upscale
+            ctx = upscale_features(ctx, config.predictor_upscale_factor)
+            ctx_token_ids = upscale_token_ids(
+                ctx_token_ids, config.predictor_upscale_factor
+            )
+
+            targets = upscale_features(targets, config.predictor_upscale_factor)
+            target_token_ids = upscale_token_ids(
+                target_token_ids, config.predictor_upscale_factor
+            )
+
+            if not self.did_forward_once:
+                print("upscaled ctx", ctx.shape)
+                print("upscaled tgt", targets.shape)
+
+        _, num_ctx_tokens, _ = ctx_token_ids.shape
+        _, num_target_tokens, _ = target_token_ids.shape
+
         # Prepare the inputs for the predictor
         x = torch.cat((ctx, targets), 1)
         combined_token_ids = torch.cat((ctx_token_ids, target_token_ids), 1)
@@ -748,18 +748,22 @@ class IJEPAModel(nn.Module):
         )
         prediction_mask[:, num_ctx_tokens:] = 1
 
+        if not self.did_forward_once:
+            print("predictor inputs:", x.shape)
+
         x = self.predictor(x, combined_token_ids, prediction_mask=prediction_mask)
+
         predictions = x[:, num_ctx_tokens:]
 
         loss = F.smooth_l1_loss(predictions, targets, reduction="none")
 
         # Exclude masked tokens from the loss
-        target_sample_ids = combined_token_ids[:, num_ctx_tokens:, 0]
+        target_sample_ids = target_token_ids[:, :, 0]
         is_target_mask = target_sample_ids != MASK_SAMPLE_ID
 
         if not config.should_predict_register_tokens:
             # Exclude register tokens from the loss
-            target_register_ids = combined_token_ids[:, num_ctx_tokens:, 1]
+            target_register_ids = target_token_ids[:, :, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SAMPLE_ID)
 
         result_dict = dict(smooth_rank=smooth_rank)
@@ -768,11 +772,11 @@ class IJEPAModel(nn.Module):
             result_dict["tokenwise_loss"] = loss
 
         if return_predictor_target_token_ids:
-            result_dict["predictor_target_token_ids"] = combined_token_ids[
-                :, num_ctx_tokens:
-            ]
+            result_dict["predictor_target_token_ids"] = target_token_ids
 
         loss = loss[is_target_mask].mean()
         result_dict["loss"] = loss
+
+        self.did_forward_once = True
 
         return result_dict
