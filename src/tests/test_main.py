@@ -19,10 +19,17 @@ class TestMain(unittest.TestCase):
             mlp_config=mlp_config, attention_config=attn_config
         )
         encoder_conf = EncoderConfig(num_transformer_blocks=1, block_config=block_conf)
+        predictor_upscale_factor = 2
         predictor_conf = PredictorConfig(
-            input_size=16, num_transformer_blocks=1, block_config=block_conf
+            input_size=16 // predictor_upscale_factor**2,
+            num_transformer_blocks=1,
+            block_config=block_conf,
         )
-        model_conf = IJEPAConfig(encoder=encoder_conf, predictor=predictor_conf)
+        model_conf = IJEPAConfig(
+            encoder=encoder_conf,
+            predictor=predictor_conf,
+            predictor_upscale_factor=predictor_upscale_factor,
+        )
         context_target_dataset = ContextTargetDatasetConfig(packer_batch_size=2)
         conf = MainConfig(
             should_compile=False,
@@ -38,6 +45,7 @@ class TestMain(unittest.TestCase):
             lidar_num_unique_samples=20,
             lidar_num_augmentations=10,
         )
+
         return conf
 
     def test_train_mode(self):

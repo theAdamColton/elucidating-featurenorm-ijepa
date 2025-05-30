@@ -109,6 +109,12 @@ class MainConfig:
             == self.num_image_channels * self.patch_size**2
         )
 
+        embed_dim = self.model.encoder.block_config.mlp_config.embed_dim
+        assert embed_dim % self.model.predictor_upscale_factor**2 == 0
+        assert self.model.predictor.input_size == (
+            embed_dim // self.model.predictor_upscale_factor**2
+        )
+
         assert self.batch_size % self.context_target_dataset.packer_batch_size == 0
         assert self.context_target_dataset.packer_batch_size <= self.batch_size
         assert self.context_target_dataset.patch_size == self.patch_size

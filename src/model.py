@@ -457,6 +457,37 @@ class Predictor(nn.Module):
         return x
 
 
+def upscale_features(x, scale_factor=2):
+    x = einx.rearrange(
+        "b s (h w dd) -> b (s h w) dd", x, h=scale_factor, w=scale_factor
+    )
+    return x
+
+
+def upscale_token_ids(ids, scale_factor=2):
+    b, s, m = ids.shape
+    device = ids.device
+
+    ids = einx.rearrange("b s m-> b s h w m", ids, h=scale_factor, w=scale_factor)
+
+    other_ids, position_ids = ids[..., :-2], ids[..., -2:]
+    position_ids = position_ids * scale_factor
+
+    sub_position_ids = torch.meshgrid(
+        torch.arange(scale_factor, device=device),
+        torch.arange(scale_factor, device=device),
+        indexing="ij",
+    )
+    sub_position_ids = torch.stack(sub_position_ids, -1)
+
+    position_ids = einx.add("h w nd, b s h w nd", sub_position_ids, position_ids)
+
+    ids = torch.cat((other_ids, position_ids), -1)
+    ids = einx.rearrange("b s h w m -> b (s h w) m", ids)
+
+    return ids
+
+
 def get_random_idx(
     r, b, s, capacity=0.5, mask=None, device=torch.device("cuda"), dtype=torch.float32
 ):
@@ -519,6 +550,7 @@ class IJEPAConfig:
     ] = "layernorm"
 
     predictor_batch_repeat: int = 8
+    predictor_upscale_factor: int = 1
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
 
@@ -563,8 +595,7 @@ class IJEPAModel(nn.Module):
         config = self.config
         device, dtype = patches.device, patches.dtype
 
-        b, full_sequence_length, _ = patches.shape
-        target_sequence_length = full_sequence_length - context_sequence_length
+        b, _, _ = patches.shape
 
         with torch.no_grad():
             target_hidden_states, *_ = self.ema_encoder(patches, token_ids)
@@ -576,7 +607,7 @@ class IJEPAModel(nn.Module):
             target_hidden_states = target_hidden_states[:, context_sequence_length:, :]
             y_token_ids = token_ids[:, context_sequence_length:, :]
 
-        b, ts, _ = target_hidden_states.shape
+        b, target_sequence_length, _ = target_hidden_states.shape
 
         # Potentially do some post processing on the target hidden states
         if config.target_norm_mode == "layernorm":
@@ -617,17 +648,29 @@ class IJEPAModel(nn.Module):
         x_token_ids = token_ids[:, :context_sequence_length]
         x, *_ = self.encoder(x, x_token_ids)
 
+        if config.predictor_upscale_factor > 1:
+            # Upscale
+            x = upscale_features(x, config.predictor_upscale_factor)
+            x_token_ids = upscale_token_ids(
+                x_token_ids, config.predictor_upscale_factor
+            )
+
+            target_hidden_states = upscale_features(
+                target_hidden_states, config.predictor_upscale_factor
+            )
+            y_token_ids = upscale_token_ids(
+                y_token_ids, config.predictor_upscale_factor
+            )
+
+            context_sequence_length = x.shape[1]
+            target_sequence_length = target_hidden_states.shape[1]
+
         if config.should_attempt_mask_dropping:
             is_ctx_padding = x_token_ids[..., 0] == MASK_SAMPLE_ID
         else:
             is_ctx_padding = None
 
-        # TODO
-        # Try to give the predictor at least
-        # one token for context and one token for prediction from each sample
-        # otherwise the loss for some samples will be sometimes undefined
-
-        # (r b k)
+        # (rb k)
         context_idx = get_random_idx(
             r=config.predictor_batch_repeat,
             b=b,
@@ -649,7 +692,7 @@ class IJEPAModel(nn.Module):
         target_idx = get_random_idx(
             r=config.predictor_batch_repeat,
             b=b,
-            s=ts,
+            s=target_sequence_length,
             capacity=config.predictor_target_capacity,
             mask=is_target_padding,
             device=device,
