@@ -59,6 +59,7 @@ class MainConfig:
     resume_checkpoint_path: str | None = None
 
     test_mode: bool = False
+    gc_every_num_epochs: int = 10
 
     num_image_channels: int = 3
 

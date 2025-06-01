@@ -5,6 +5,8 @@ conf:
   dtype: bfloat16
   device: cuda
 
+  steady_lr: 1e-3
+
   batch_size: 320
   num_workers: 4
 
@@ -58,3 +60,4 @@ conf:
     min_context_capacity: 0.25
     max_context_capacity: 0.5
     absolute_max_context_capacity: 0.5
+    mask_window_size: 4

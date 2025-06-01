@@ -434,7 +434,9 @@ class Trainer:
             # TODO
             # This is a hack to avoid memory usage creeping up
             # from dataloader workers never closing tar files
-            gc.collect()
+            if (self.training_state["epoch"] + 1) % self.conf.gc_every_num_epochs == 0:
+                dataloader_stream = iter(self.dataloader)
+                gc.collect()
 
             is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs - 1
             should_validate = (
