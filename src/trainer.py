@@ -426,17 +426,13 @@ class Trainer:
         )
 
         prog_bar = tqdm(desc="training")
-        dataloader_stream = iter(self.dataloader)
+        dataloader_stream = None
 
         for _ in range(self.conf.num_epochs):
-            self.train_one_epoch(dataloader_stream, prog_bar)
-
-            # TODO
-            # This is a hack to avoid memory usage creeping up
-            # from dataloader workers never closing tar files
-            if (self.training_state["epoch"] + 1) % self.conf.gc_every_num_epochs == 0:
+            if dataloader_stream is None:
                 dataloader_stream = iter(self.dataloader)
-                gc.collect()
+
+            self.train_one_epoch(dataloader_stream, prog_bar)
 
             is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs - 1
             should_validate = (
@@ -451,6 +447,17 @@ class Trainer:
                     )
                 )
             )
+
+            # TODO
+            # This is a hack to avoid memory usage creeping up
+            # from dataloader workers never closing tar files
+            should_gc = (
+                should_validate
+                or (self.training_state["epoch"] % self.conf.gc_every_num_epochs) == 0
+            )
+            if should_gc:
+                dataloader_stream = None
+                gc.collect()
 
             if should_validate:
                 self.run_validation()

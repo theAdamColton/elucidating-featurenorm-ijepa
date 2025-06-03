@@ -6,6 +6,8 @@ conf:
   device: cuda
 
   steady_lr: 1e-3
+  num_lr_cooldown_steps: 40404
+  end_lr: 2e-4
 
   batch_size: 320
   num_workers: 4
@@ -29,8 +31,8 @@ conf:
           num_attention_heads: 6
           should_use_qk_norm: true
         norm_mode: layernorm
-      norm_out_mode: dyntanh
-      norm_elementwise_affine: false
+      norm_out_mode: layernorm
+      norm_elementwise_affine: true
 
     predictor:
       input_size: 384
@@ -50,7 +52,7 @@ conf:
 
     predictor_batch_repeat: 4
     predictor_upscale_factor: 1
-    target_norm_mode: disabled
+    target_norm_mode: layernorm
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25
