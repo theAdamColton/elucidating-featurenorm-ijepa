@@ -116,13 +116,23 @@ def hsl_to_rgb(x):
 
 
 def features_to_rgb(x):
+    """
+    x: Channels-last features: (h w d), cpu float tensor
+    """
     x = gaussian_blur(x)
     *leading_shape, d = x.shape
     x = einx.rearrange("... d -> (...) d", x)
-    pca_model = torch_pca.PCA(n_components=3)
+
+    pca_model = torch_pca.PCA(n_components=3, whiten=True)
     # hue, saturation, lightness
     x = pca_model.fit_transform(x)
+
     x = scale_to_zero_one(x)
+
+    # Artificially increase saturation and lightness
+    scale = torch.tensor([1, 1.2, 1.2])
+    x = einx.multiply("... c, c", x, scale)
+
     x = hsl_to_rgb(x)
     x = (x.clip(0, 1) * 255).to(torch.uint8)
     x = x.reshape(*leading_shape, 3)
@@ -145,35 +155,28 @@ def visualize_embeddings(
     batch = next(iter(dataloader))
     patches, token_ids = prepare_context_target_batch(batch, device, dtype)
 
-    x_patches = patches[:, :context_sequence_length]
-    y_patches = patches[:, context_sequence_length:]
-
-    x_token_ids = token_ids[:, :context_sequence_length]
-    y_token_ids = token_ids[:, context_sequence_length:]
-
-    # cat context and target
-    y_patches = torch.cat((x_patches, y_patches), 1)
-    y_token_ids = torch.cat((x_token_ids, y_token_ids), 1)
-
-    b, s, d = y_patches.shape
+    b, s, d = patches.shape
 
     with autocast_fn():
         with torch.inference_mode():
-            embeddings, *_ = model.ema_encoder(x=y_patches, token_ids=y_token_ids)
+            _, all_layer_features = model.encoder(
+                x=patches, token_ids=token_ids, return_all_layer_features=True
+            )
+            features = all_layer_features[-4]
 
-    *_, hidden_d = embeddings.shape
+    *_, hidden_d = features.shape
 
-    embeddings = embeddings.cpu().float()
-    y_token_ids = y_token_ids.cpu()
+    features = features.cpu().float()
+    token_ids = token_ids.cpu()
     # Unscale pixel values in patches
-    y_patches = (y_patches.cpu().float() + 1) / 2
-    y_patches = y_patches.clip(0, 1) * 255
-    y_patches = y_patches.to(torch.uint8)
+    patches = (patches.cpu().float() + 1) / 2
+    patches = patches.clip(0, 1) * 255
+    patches = patches.to(torch.uint8)
 
     viz_output_path = get_viz_output_path()
 
     for i in range(b):
-        sample_ids, position_ids = y_token_ids[i, :, 0], y_token_ids[i, :, -2:]
+        sample_ids, position_ids = token_ids[i, :, 0], token_ids[i, :, -2:]
 
         unique_sample_ids = sample_ids.unique().tolist()
         unique_sample_ids.sort()
@@ -184,41 +187,39 @@ def visualize_embeddings(
             sequence_mask = sample_ids == sequence_id
 
             sample_position_ids = position_ids[sequence_mask]
-            sample_tokens = y_patches[i][sequence_mask]
-            sample_embeddings = embeddings[i][sequence_mask]
+            sample_tokens = patches[i][sequence_mask]
+            sample_features = features[i][sequence_mask]
 
             s, d = sample_tokens.shape
 
             nph, npw = (sample_position_ids + 1).amax(0).tolist()
 
             unpacked_pixel_image = torch.zeros(nph, npw, d, dtype=torch.uint8)
-            unpacked_embedding_image = torch.zeros(
+            unpacked_feature_image = torch.zeros(
                 nph, npw, hidden_d, dtype=torch.float32
             )
 
             for j in range(s):
                 hid, wid = sample_position_ids[j]
                 unpacked_pixel_image[hid, wid] = sample_tokens[j]
-                unpacked_embedding_image[hid, wid] = sample_embeddings[j]
+                unpacked_feature_image[hid, wid] = sample_features[j]
 
-            unpacked_embedding_image = einx.rearrange(
-                "nph npw d -> one d nph npw", unpacked_embedding_image, one=1
+            unpacked_feature_image = features_to_rgb(unpacked_feature_image)
+
+            unpacked_feature_image = einx.rearrange(
+                "nph npw c -> one c nph npw", unpacked_feature_image, one=1
             )
-            unpacked_embedding_image = F.interpolate(
-                unpacked_embedding_image,
+
+            unpacked_feature_image = F.interpolate(
+                unpacked_feature_image,
                 scale_factor=(patch_size, patch_size),
                 mode="bilinear",
                 antialias=True,
             )
-            unpacked_embedding_image = einx.rearrange(
-                "one d h w -> one h w d", unpacked_embedding_image
-            ).squeeze(0)
 
-            unpacked_embedding_image = features_to_rgb(unpacked_embedding_image)
+            # one c h w -> c h w
+            unpacked_feature_image = unpacked_feature_image.squeeze(0)
 
-            unpacked_embedding_image = einx.rearrange(
-                "h w c -> c h w", unpacked_embedding_image
-            )
             unpacked_pixel_image = einx.rearrange(
                 "nph npw (ph pw c) -> c (nph ph) (npw pw)",
                 unpacked_pixel_image,
@@ -227,7 +228,7 @@ def visualize_embeddings(
                 c=num_image_channels,
             )
 
-            image = torch.cat((unpacked_pixel_image, unpacked_embedding_image), -1)
+            image = torch.cat((unpacked_pixel_image, unpacked_feature_image), -1)
 
             output_path = viz_output_path / f"{i:05} {sequence_id:08}.png"
             torchvision.io.write_png(image, str(output_path))
