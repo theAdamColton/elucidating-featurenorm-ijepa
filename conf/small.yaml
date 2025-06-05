@@ -50,8 +50,8 @@ conf:
         norm_mode: layernorm
       norm_out_mode: layernorm
 
-    predictor_batch_repeat: 4
-    target_norm_mode: running-singlescale-batchnorm
+    predictor_batch_repeat: 8
+    target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.5
@@ -61,7 +61,7 @@ conf:
     sample_predictor_targets_with_replacement: false
 
   context_target_dataset:
-    min_context_capacity: 0.25
+    min_context_capacity: 0.5
     max_context_capacity: 0.75
     absolute_max_context_capacity: 0.5
     mask_window_size: 2

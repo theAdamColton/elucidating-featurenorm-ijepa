@@ -127,26 +127,6 @@ class RopePosEmbedND(nn.Module):
         return freqs_cos, freqs_sin
 
 
-def masked_mean_var(x, mask):
-    while mask.ndim < x.ndim:
-        mask = mask.unsqueeze(-1)
-
-    x = x * mask
-
-    num_masked = einx.sum("[...]", mask)
-    num_masked.clip_(1)
-
-    x_norm = x / num_masked
-
-    mean = einx.sum("[...] d", x_norm)
-
-    var = einx.subtract("b ... d, d", x, mean) ** 2
-    var = var / num_masked
-    var = einx.sum("[...] d", var)
-
-    return mean, var
-
-
 class RunningBatchNorm(nn.Module):
     def __init__(self, hidden_size, beta=0.99, eps=1e-5):
         super().__init__()
@@ -161,12 +141,14 @@ class RunningBatchNorm(nn.Module):
         need_update = self.is_initted > 0 and self.training
 
         if need_init or need_update:
-            x = x.float()
+            if mask is not None:
+                x_tokens = x[mask]
+            else:
+                x_tokens = x
 
             with torch.no_grad():
-                mean, var = masked_mean_var(x, mask)
-
-            std = var**0.5
+                mean = einx.mean("[...] d", x_tokens)
+                std = einx.std("[...] d", x_tokens)
 
             if need_init:
                 self.running_mean.copy_(mean)
@@ -610,11 +592,7 @@ class IJEPAConfig:
     should_predict_from_all_target: bool = False
 
     target_norm_mode: Literal[
-        "layernorm",
-        "disabled",
-        "batchnorm",
-        "running-batchnorm",
-        "running-singlescale-batchnorm",
+        "layernorm", "disabled", "batchnorm", "running-batchnorm"
     ] = "layernorm"
 
     predictor_batch_repeat: int = 8
@@ -639,8 +617,6 @@ class IJEPAModel(nn.Module):
 
         if config.target_norm_mode == "running-batchnorm":
             self.running_batchnorm = RunningBatchNorm(self.encoder.hidden_size)
-        elif config.target_norm_mode == "running-singlescale-batchnorm":
-            self.running_batchnorm = RunningBatchNorm(1)
 
         self.predictor = Predictor(config.predictor)
 
@@ -696,28 +672,19 @@ class IJEPAModel(nn.Module):
 
         elif config.target_norm_mode == "batchnorm":
             mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
-            mean, var = masked_mean_var(target_hidden_states, mask)
-            std = var**0.5
+            mean = einx.mean("[n] d", target_hidden_states[mask])
+            std = einx.std("[n] d", target_hidden_states[mask])
             target_hidden_states = einx.subtract(
-                "b ts d, d", target_hidden_states, mean.to(dtype)
+                "b ts d, d", target_hidden_states, mean
             )
             eps = 1e-7
             target_hidden_states = einx.divide(
-                "b ts d, d", target_hidden_states, std.clamp(eps).to(dtype)
+                "b ts d, d", target_hidden_states, std.clamp(eps)
             )
 
         elif config.target_norm_mode == "running-batchnorm":
             mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
             target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
-
-        elif config.target_norm_mode == "running-singlescale-batchnorm":
-            mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
-            target_hidden_states = einx.rearrange(
-                "... -> ... one", target_hidden_states, one=1
-            )
-            target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
-            # ... one -> ...
-            target_hidden_states = target_hidden_states.squeeze(-1)
 
         elif config.target_norm_mode == "disabled":
             pass
