@@ -696,14 +696,14 @@ class IJEPAModel(nn.Module):
 
         elif config.target_norm_mode == "batchnorm":
             mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
-            mean = einx.mean("[n] d", target_hidden_states[mask])
-            std = einx.std("[n] d", target_hidden_states[mask])
+            mean, var = masked_mean_var(target_hidden_states, mask)
+            std = var**0.5
             target_hidden_states = einx.subtract(
-                "b ts d, d", target_hidden_states, mean
+                "b ts d, d", target_hidden_states, mean.to(dtype)
             )
             eps = 1e-7
             target_hidden_states = einx.divide(
-                "b ts d, d", target_hidden_states, std.clamp(eps)
+                "b ts d, d", target_hidden_states, std.clamp(eps).to(dtype)
             )
 
         elif config.target_norm_mode == "running-batchnorm":
