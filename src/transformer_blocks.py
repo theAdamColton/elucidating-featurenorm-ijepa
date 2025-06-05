@@ -240,10 +240,6 @@ class DiffMoeMLP(nn.Module):
         x = einx.rearrange("... d -> (...) d", x)
         bs = x.shape[0]
 
-        if mask is not None:
-            mask = einx.rearrange("... -> (...)", mask)
-            assert bs == mask.shape[0]
-
         # TODO
         # this differs from the official diff-moe implementation
         # I derive gate scores from unnormalized x, instead of
@@ -254,6 +250,8 @@ class DiffMoeMLP(nn.Module):
         scores = (F.tanh(scores) + 1) / 2
 
         if mask is not None:
+            mask = einx.rearrange("... -> (...) one", mask, one=1)
+            assert bs == mask.shape[0]
             mask_value = -200
             scores = scores.masked_fill(mask, mask_value)
 
