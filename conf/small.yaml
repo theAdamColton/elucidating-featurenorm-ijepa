@@ -50,18 +50,18 @@ conf:
         norm_mode: layernorm
       norm_out_mode: layernorm
 
-    predictor_batch_repeat: 8
+    predictor_batch_repeat: 4
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.5
-    predictor_target_capacity: 0.125
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
 
     sample_predictor_context_with_replacement: true
-    sample_predictor_targets_with_replacement: false
+    sample_predictor_targets_with_replacement: true
 
   context_target_dataset:
-    min_context_capacity: 0.5
-    max_context_capacity: 0.75
+    min_context_capacity: 0.25
+    max_context_capacity: 0.5
     absolute_max_context_capacity: 0.5
     mask_window_size: 2
