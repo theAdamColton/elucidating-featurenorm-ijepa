@@ -286,6 +286,8 @@ class Encoder(nn.Module):
             sample_ids, config.block_config.attention_config.num_attention_heads
         )
 
+        key_pad_mask = sample_ids == MASK_SAMPLE_ID
+
         if return_all_layer_features:
             all_layer_features = torch.empty(
                 config.num_transformer_blocks + 1,
@@ -299,7 +301,12 @@ class Encoder(nn.Module):
             all_layer_features[0] = x
 
         for i, block in enumerate(self.blocks):
-            x = block(x, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
+            x = block(
+                x,
+                key_pad_mask=key_pad_mask,
+                attn_mask=attn_mask,
+                rotary_embeds=rotary_embeds,
+            )
 
             if return_all_layer_features:
                 all_layer_features[i + 1] = x
@@ -442,13 +449,20 @@ class Predictor(nn.Module):
             sample_ids, config.block_config.attention_config.num_attention_heads
         )
 
+        key_pad_mask = sample_ids == MASK_SAMPLE_ID
+
         if config.use_rope2d:
             rotary_embeds = self.pos_emb(position_ids)
         else:
             rotary_embeds = None
 
         for block in self.blocks:
-            x = block(x, attn_mask=attn_mask, rotary_embeds=rotary_embeds)
+            x = block(
+                x,
+                key_pad_mask=key_pad_mask,
+                attn_mask=attn_mask,
+                rotary_embeds=rotary_embeds,
+            )
 
         x = self.norm_out(x)
         x = self.proj_out(x)
@@ -522,7 +536,7 @@ def get_random_idx_without_replacement(
     s,
     capacity=0.5,
     mask=None,
-    device=torch.device("cuda"),
+    device=torch.device("cpu"),
     dtype=torch.float32,
 ):
     """

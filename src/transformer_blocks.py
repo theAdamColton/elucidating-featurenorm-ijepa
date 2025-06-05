@@ -223,9 +223,11 @@ class DiffMoeMLP(nn.Module):
     def forward(
         self,
         x,
+        mask=None,
     ):
         """
         x: Shape: (... d)
+        mask: Optional, shape: (...)
         Notation:
         k: the total number of selected tokens
         m: the total number of dropped tokens
@@ -238,14 +240,22 @@ class DiffMoeMLP(nn.Module):
         x = einx.rearrange("... d -> (...) d", x)
         bs = x.shape[0]
 
+        if mask is not None:
+            mask = einx.rearrange("... -> (...)", mask)
+            assert bs == mask.shape[0]
+
         # TODO
         # this differs from the official diff-moe implementation
         # I derive gate scores from unnormalized x, instead of
         # normalized x
-        # And I use tanh instead of softmax
+        # And I use tanh scaled to [0,1], instead of softmax
         scores = self.gate_proj(x)
-        scores = scores.softmax(-1)
-        # scores = (F.tanh(scores) + 1) / 2
+        # scores = scores.softmax(-1)
+        scores = (F.tanh(scores) + 1) / 2
+
+        if mask is not None:
+            mask_value = -200
+            scores = scores.masked_fill(mask, mask_value)
 
         # k is the total number of MLP forward passes over all experts
         k = int(bs * self.config.capacity) // self.config.num_experts
@@ -315,17 +325,24 @@ class TransformerBlock(nn.Module):
         self.attention = Attention(self.config.attention_config)
         self.mlp = DiffMoeMLP(self.config.mlp_config)
 
-    def forward(self, x, block_mask=None, attn_mask=None, rotary_embeds=None):
+    def forward(
+        self,
+        x,
+        key_pad_mask=None,
+        attn_block_mask=None,
+        attn_mask=None,
+        rotary_embeds=None,
+    ):
         norm_x = self.norm1(x)
 
         x = (
             x
             + self.attention(
                 norm_x,
-                block_mask=block_mask,
+                block_mask=attn_block_mask,
                 attn_mask=attn_mask,
                 rotary_embeds=rotary_embeds,
             )[0]
         )
-        x = self.mlp(x)
+        x = self.mlp(x, key_pad_mask)
         return x

@@ -6,8 +6,8 @@ conf:
   device: cuda
 
   steady_lr: 1e-3
-  num_lr_cooldown_steps: 40404
-  end_lr: 2e-4
+  num_lr_cooldown_steps: 100000
+  end_lr: 7e-5
 
   batch_size: 320
   num_workers: 4
@@ -23,7 +23,7 @@ conf:
       block_config:
         mlp_config:
           embed_dim: 384
-          num_experts: 8
+          num_experts: 16
           norm_mode: layernorm
         attention_config:
           embed_dim: 384
@@ -31,12 +31,12 @@ conf:
           num_attention_heads: 6
           should_use_qk_norm: true
         norm_mode: layernorm
-      norm_out_mode: layernorm
+      norm_out_mode: dyntanh
       norm_elementwise_affine: true
 
     predictor:
       input_size: 384
-      num_transformer_blocks: 6
+      num_transformer_blocks: 4
       block_config:
         mlp_config:
           embed_dim: 256
@@ -50,16 +50,18 @@ conf:
         norm_mode: layernorm
       norm_out_mode: layernorm
 
-    predictor_batch_repeat: 4
-    predictor_upscale_factor: 1
-    target_norm_mode: layernorm
+    predictor_batch_repeat: 8
+    target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.25
-    predictor_target_capacity: 0.25
+    predictor_context_capacity: 0.5
+    predictor_target_capacity: 0.125
+
+    sample_predictor_context_with_replacement: true
+    sample_predictor_targets_with_replacement: false
 
   context_target_dataset:
-    min_context_capacity: 0.25
-    max_context_capacity: 0.5
+    min_context_capacity: 0.5
+    max_context_capacity: 0.75
     absolute_max_context_capacity: 0.5
-    mask_window_size: 4
+    mask_window_size: 2

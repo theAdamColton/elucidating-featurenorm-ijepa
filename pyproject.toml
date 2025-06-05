@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.6.0",
     "einx>=0.3.0",
+    "flash-attn",
     "jsonargparse[signatures]>=4.38.0",
     "matplotlib>=3.10.1",
     "numpy>=2.2.5",
@@ -24,3 +25,7 @@ dependencies = [
 dev = [
     "bpython>=0.25",
 ]
+
+# This is hardcoded to cuda12.8 and torch 2.7 and python 3.12
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.1.0/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-linux_x86_64.whl" }
