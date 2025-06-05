@@ -27,7 +27,7 @@ class MainConfig:
     num_lr_cooldown_steps: int = 50000
     end_lr: float = 1e-5
 
-    num_epochs: int = 800
+    num_epochs: int = 350
 
     patch_size: int = 16
 

@@ -349,7 +349,6 @@ class Trainer:
             )
 
             if estimated_epoch > self.training_state["epoch"]:
-                self.training_state["epoch"] += 1
                 return
 
             if self.conf.test_mode:
@@ -428,13 +427,14 @@ class Trainer:
         prog_bar = tqdm(desc="training")
         dataloader_stream = None
 
-        for _ in range(self.conf.num_epochs):
+        while self.training_state["epoch"] < self.conf.num_epochs:
             if dataloader_stream is None:
                 dataloader_stream = iter(self.dataloader)
 
             self.train_one_epoch(dataloader_stream, prog_bar)
+            self.training_state["epoch"] += 1
 
-            is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs - 1
+            is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs
             should_validate = (
                 self.conf.test_mode
                 or is_last_epoch
