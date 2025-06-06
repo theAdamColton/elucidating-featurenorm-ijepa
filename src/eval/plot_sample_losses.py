@@ -6,7 +6,7 @@ import torchvision
 import matplotlib.pyplot as plt
 import tensorset as ts
 
-from src.dataset import ContextTargetDatasetConfig, get_repeated_data
+from src.dataset import MASK_SAMPLE_ID, ContextTargetDatasetConfig, get_repeated_data
 from src.model import IJEPAModel
 from src.utils import get_viz_output_path
 from src.eval.utils import scale_to_zero_one
@@ -143,7 +143,14 @@ def plot_sample_losses(
         # Compute the mean loss for each unique sample across the batch
         for i in range(model.config.predictor_batch_repeat):
             for j in range(b):
-                id = target_token_ids[i, j, 0, 0].item()
+                pred_ids = target_token_ids[i, j, :, 0]
+                pred_ids = torch.unique(pred_ids).tolist()
+                if MASK_SAMPLE_ID in pred_ids:
+                    pred_ids.remove(MASK_SAMPLE_ID)
+                id = pred_ids[0]
+                assert len(pred_ids) == 1
+
+                assert id != MASK_SAMPLE_ID
                 mask = target_token_ids[i, j, :, 0] == id
                 assert mask.sum() > 0
 
@@ -156,8 +163,14 @@ def plot_sample_losses(
                 loss_image = loss_images[id]
                 loss_count = loss_counts[id]
                 for (hid, wid), loss in zip(position_ids, losses):
-                    loss_image[hid, wid] += loss
-                    loss_count[hid, wid] += 1
+                    try:
+                        loss_image[hid, wid] += loss
+
+                        loss_count[hid, wid] += 1
+                    except:
+                        import bpdb
+
+                        bpdb.set_trace()
 
                 # Measure the mean sample loss, and the variance of the sample loss
                 sample_loss = losses.mean()

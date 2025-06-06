@@ -18,7 +18,7 @@ from main_conf import MainConfig
 from src.dataset import MASK_SAMPLE_ID
 from src.model import IJEPAModel
 from src.validate import validate
-from src.dataset import get_lidar_data
+from src.dataset import get_repeated_data
 from src.lidar import compute_lidar_score
 
 
@@ -139,13 +139,20 @@ class Trainer:
     def compute_lidar_score(self):
         conf = self.conf
         if self.lidar_data is None:
-            lidar_data = get_lidar_data(
+            lidar_data = get_repeated_data(
                 config=conf.context_target_dataset,
                 dataset_pattern=conf.train_dataset_pattern,
                 num_unique_samples=conf.lidar_num_unique_samples,
                 num_repeat_samples=conf.lidar_num_augmentations,
                 image_column_name=conf.image_column_name,
             )
+
+            context_sequence_length = (
+                self.conf.context_target_dataset.packer_context_sequence_length
+            )
+            # Take only the contexts
+            # n q (sx sy) ... -> n q sx ...
+            lidar_data = lidar_data.iloc[:, :, :context_sequence_length]
 
             def _ungroup(x):
                 return einx.rearrange("n q s ... -> (n q) s ...", x)

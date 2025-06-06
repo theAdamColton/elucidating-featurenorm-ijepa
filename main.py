@@ -155,6 +155,7 @@ def main(conf: MainConfig = MainConfig()):
             patch_size=patch_size,
             num_image_channels=num_image_channels,
             autocast_fn=autocast_fn,
+            feature_depth=conf.visualize_features_depth,
         )
 
     elif conf.mode == "train":

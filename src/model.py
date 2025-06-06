@@ -470,37 +470,6 @@ class Predictor(nn.Module):
         return x
 
 
-def upscale_features(x, scale_factor=2):
-    x = einx.rearrange(
-        "b s (h w dd) -> b (s h w) dd", x, h=scale_factor, w=scale_factor
-    )
-    return x
-
-
-def upscale_token_ids(ids, scale_factor=2):
-    b, s, m = ids.shape
-    device, dtype = ids.device, ids.dtype
-
-    ids = einx.rearrange("b s m-> b s h w m", ids, h=scale_factor, w=scale_factor)
-
-    ids, position_ids = ids[..., :-2], ids[..., -2:]
-    position_ids = position_ids * scale_factor
-
-    sub_position_ids = torch.meshgrid(
-        torch.arange(scale_factor, device=device, dtype=dtype),
-        torch.arange(scale_factor, device=device, dtype=dtype),
-        indexing="ij",
-    )
-    sub_position_ids = torch.stack(sub_position_ids, -1)
-
-    position_ids = einx.add("h w nd, b s h w nd", sub_position_ids, position_ids)
-
-    ids = torch.cat((ids, position_ids), -1)
-    ids = einx.rearrange("b s h w m -> b (s h w) m", ids)
-
-    return ids
-
-
 def get_random_idx_with_replacement(
     r,
     b,
@@ -596,7 +565,6 @@ class IJEPAConfig:
     ] = "layernorm"
 
     predictor_batch_repeat: int = 8
-    predictor_upscale_factor: int = 1
     predictor_context_capacity: float = 0.125
     predictor_target_capacity: float = 0.125
 
@@ -819,22 +787,6 @@ class IJEPAModel(nn.Module):
         target_token_ids = einx.rearrange(
             "rb k ws nd -> rb (k ws) nd", target_token_ids
         )
-
-        if config.predictor_upscale_factor > 1:
-            # Upscale
-            ctx = upscale_features(ctx, config.predictor_upscale_factor)
-            ctx_token_ids = upscale_token_ids(
-                ctx_token_ids, config.predictor_upscale_factor
-            )
-
-            targets = upscale_features(targets, config.predictor_upscale_factor)
-            target_token_ids = upscale_token_ids(
-                target_token_ids, config.predictor_upscale_factor
-            )
-
-            if not self.did_forward_once:
-                print("upscaled ctx", ctx.shape)
-                print("upscaled tgt", targets.shape)
 
         _, num_ctx_tokens, _ = ctx_token_ids.shape
         _, num_target_tokens, _ = target_token_ids.shape

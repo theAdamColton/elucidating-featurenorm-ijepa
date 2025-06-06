@@ -148,6 +148,7 @@ def visualize_embeddings(
     patch_size,
     num_image_channels,
     autocast_fn,
+    feature_depth=-4,
 ):
     """
     Visualize the embeddings of the model.
@@ -162,7 +163,7 @@ def visualize_embeddings(
             _, all_layer_features = model.encoder(
                 x=patches, token_ids=token_ids, return_all_layer_features=True
             )
-            features = all_layer_features[-4]
+            features = all_layer_features[feature_depth]
 
     *_, hidden_d = features.shape
 
