@@ -132,15 +132,17 @@ def main(conf: MainConfig = MainConfig()):
 
     elif conf.mode == "plot-sample-losses":
         plot_sample_losses(
-            dataloader=dataloader,
-            context_sequence_length=conf.context_target_dataset.packer_context_sequence_length,
+            context_target_dataset=conf.context_target_dataset,
+            dataset_pattern=conf.train_dataset_pattern,
+            image_column_name=conf.image_column_name,
             model=model,
             device=conf.torch_device,
             dtype=conf.torch_dtype,
             patch_size=patch_size,
             num_image_channels=num_image_channels,
             autocast_fn=autocast_fn,
-            window_size=conf.context_target_dataset.mask_window_size,
+            seed=conf.seed,
+            batch_size=conf.batch_size,
         )
 
     elif conf.mode == "visualize-embeddings":
