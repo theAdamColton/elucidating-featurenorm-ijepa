@@ -882,6 +882,7 @@ def get_lidar_data(
     image_column_name: str = "jpg",
     num_unique_samples: int = 500,
     num_repeat_samples: int = 48,
+    seed: int | None = None,
 ):
     """
     similar to get_context_target_dataset,
@@ -897,6 +898,18 @@ def get_lidar_data(
         "sample_ids": MASK_SAMPLE_ID,
     }
 
+    if seed:
+        rng = random.Random()
+        rng.seed(seed)
+        resizer_rng = random.Random(rng.randbytes(16))
+        splitter_rng = random.Random(rng.randbytes(16))
+        sample_id_rng = random.Random(rng.randbytes(16))
+    else:
+        rng = None
+        resizer_rng = None
+        splitter_rng = None
+        sample_id_rng = None
+
     dataset = (
         _get_image_dataset(
             dataset_pattern=dataset_pattern,
@@ -905,7 +918,7 @@ def get_lidar_data(
         )
         .select(ImageSizeFilter(config.min_side_length))
         # Assign a unique sample id to each row
-        .compose(assign_sample_ids())
+        .compose(assign_sample_ids(rng=sample_id_rng))
         # Repeat samples
         .compose(repeat_samples(num_repeat_samples))
         # Randomly resize images, after repeating
@@ -915,6 +928,7 @@ def get_lidar_data(
                 min_side_length=config.min_side_length,
                 multiple_of=config.resize_multiple_of,
                 max_num_pixels=config.max_num_pixels,
+                rng=resizer_rng,
             )
         )
         .map(ImagePatcher(config.patch_size))
@@ -924,6 +938,7 @@ def get_lidar_data(
                 min_context_capacity=config.min_context_capacity,
                 max_context_capacity=config.max_context_capacity,
                 max_context_sequence_length=config.max_num_context_patches,
+                rng=splitter_rng,
             )
         )
         # Keep only the contexts
