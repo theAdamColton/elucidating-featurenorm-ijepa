@@ -25,10 +25,7 @@ conf:
       input_size: 768
       num_transformer_blocks: 12
       block_config:
-        mlp_config:
-          embed_dim: 384
-          num_experts: 16
-          norm_mode: layernorm
+        embed_dim: 384
         attention_config:
           embed_dim: 384
           head_dim: 64
@@ -42,10 +39,7 @@ conf:
       input_size: 384
       num_transformer_blocks: 6
       block_config:
-        mlp_config:
-          embed_dim: 256
-          num_experts: 8
-          norm_mode: layernorm
+        embed_dim: 256
         attention_config:
           embed_dim: 256
           head_dim: 64

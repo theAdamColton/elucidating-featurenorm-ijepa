@@ -170,6 +170,15 @@ class DiffMoeMLP(nn.Module):
     DiffMOE as in:
     DiffMoE: Dynamic Token Selection for Scalable Diffusion Transformers
     https://arxiv.org/pdf/2503.14487
+
+    This is a work in progress
+
+    Currently there is no allocation predictor,
+    which means this DiffMoeMLP only works when you test
+    it with the exact same batch size as training - This
+    is because the model gets some very diluted information
+    about batch statistics from the top-k expert scores
+    being pooled across different samples.
     """
 
     def __init__(self, config: DiffMoeMLPConfig):
@@ -298,9 +307,23 @@ class DiffMoeMLP(nn.Module):
         return x
 
 
+class MLP(nn.Module):
+    def __init__(self, dim=64):
+        super().__init__()
+        self.fc1 = nn.Linear(dim, dim * 4)
+        self.act = nn.GELU(approximate="tanh")
+        self.fc2 = nn.Linear(dim * 4, dim)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.fc2(x)
+        return x
+
+
 @dataclass
 class TransformerBlockConfig:
-    mlp_config: DiffMoeMLPConfig = field(default_factory=lambda: DiffMoeMLPConfig())
+    embed_dim: int = 64
     attention_config: AttentionConfig = field(default_factory=lambda: AttentionConfig())
 
     norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
@@ -311,17 +334,19 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.config = config
 
-        self.embed_dim = config.mlp_config.embed_dim
+        def get_norm():
+            if config.norm_mode == "layernorm":
+                return nn.LayerNorm(config.embed_dim)
+            elif config.norm_mode == "dyntanh":
+                return DynTanh(config.embed_dim)
+            else:
+                raise ValueError(config.norm_mode)
 
-        if config.norm_mode == "layernorm":
-            self.norm1 = nn.LayerNorm(self.embed_dim)
-        elif config.norm_mode == "dyntanh":
-            self.norm1 = DynTanh(self.embed_dim)
-        else:
-            raise ValueError(config.norm_mode)
-
+        self.norm1 = get_norm()
         self.attention = Attention(self.config.attention_config)
-        self.mlp = DiffMoeMLP(self.config.mlp_config)
+
+        self.norm2 = get_norm()
+        self.mlp = MLP(config.embed_dim)
 
     def forward(
         self,
@@ -342,5 +367,5 @@ class TransformerBlock(nn.Module):
                 rotary_embeds=rotary_embeds,
             )[0]
         )
-        x = self.mlp(x, key_pad_mask)
+        x = x + self.mlp(self.norm2(x))
         return x

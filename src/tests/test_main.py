@@ -7,17 +7,13 @@ from main import MainConfig, main
 from src.transformer_blocks import (
     AttentionConfig,
     TransformerBlockConfig,
-    DiffMoeMLPConfig,
 )
 
 
 class TestMain(unittest.TestCase):
     def get_mini_conf(self):
-        mlp_config = DiffMoeMLPConfig(embed_dim=16, mlp_ratio=1, num_experts=2)
         attn_config = AttentionConfig(embed_dim=16, head_dim=16)
-        block_conf = TransformerBlockConfig(
-            mlp_config=mlp_config, attention_config=attn_config
-        )
+        block_conf = TransformerBlockConfig(attention_config=attn_config, embed_dim=16)
         encoder_conf = EncoderConfig(num_transformer_blocks=1, block_config=block_conf)
         predictor_conf = PredictorConfig(
             input_size=16,

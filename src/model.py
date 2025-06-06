@@ -197,7 +197,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.config = config
 
-        self.hidden_size = config.block_config.mlp_config.embed_dim
+        self.hidden_size = config.block_config.embed_dim
         self.head_dim = config.block_config.attention_config.head_dim
 
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
@@ -350,7 +350,7 @@ class Predictor(nn.Module):
         super().__init__()
         self.config = config
 
-        self.hidden_size = config.block_config.mlp_config.embed_dim
+        self.hidden_size = config.block_config.embed_dim
         self.head_dim = config.block_config.attention_config.head_dim
 
         if config.should_mlp_in:
