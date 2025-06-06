@@ -15,7 +15,7 @@ import tensorset as ts
 import einx
 
 from main_conf import MainConfig
-from src.dataset import MASK_SAMPLE_ID
+from src.dataset import MASK_SAMPLE_ID, get_context_target_dataloader
 from src.model import IJEPAModel
 from src.validate import validate
 from src.dataset import get_repeated_data
@@ -48,7 +48,6 @@ class Trainer:
         self.model = model
         self.grad_scaler = grad_scaler
         self.conf = conf
-        self.dataloader = dataloader
         self.training_state = training_state
         self.patch_size = conf.patch_size
 
@@ -64,6 +63,18 @@ class Trainer:
             self.model = torch.compile(self.model)
 
         self.lidar_data = None
+
+    def get_dataloader(self):
+        conf = self.conf
+        return get_context_target_dataloader(
+            config=conf.context_target_dataset,
+            dataset_pattern=conf.train_dataset_pattern,
+            dataset_length=conf.train_dataset_length,
+            seed=conf.seed,
+            image_column_name=conf.image_column_name,
+            batch_size=conf.batch_size,
+            num_workers=conf.num_workers,
+        )
 
     @contextmanager
     def autocast_fn(self):
@@ -432,11 +443,12 @@ class Trainer:
         )
 
         prog_bar = tqdm(desc="training")
+
         dataloader_stream = None
 
         while self.training_state["epoch"] < self.conf.num_epochs:
             if dataloader_stream is None:
-                dataloader_stream = iter(self.dataloader)
+                dataloader_stream = iter(self.get_dataloader())
 
             self.train_one_epoch(dataloader_stream, prog_bar)
             self.training_state["epoch"] += 1
@@ -463,8 +475,11 @@ class Trainer:
                 or (self.training_state["epoch"] % self.conf.gc_every_num_epochs) == 0
             )
             if should_gc:
-                dataloader_stream = None
+                # My most vile and perverted HACK
+                del dataloader_stream
+                time.sleep(1)
                 gc.collect()
+                dataloader_stream = None
 
             if should_validate:
                 self.run_validation()

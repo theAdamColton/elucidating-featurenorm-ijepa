@@ -26,15 +26,18 @@ def main(conf: MainConfig = MainConfig()):
 
     patch_size = conf.patch_size
 
-    dataloader = get_context_target_dataloader(
-        config=conf.context_target_dataset,
-        dataset_pattern=conf.train_dataset_pattern,
-        dataset_length=conf.train_dataset_length,
-        seed=conf.seed,
-        image_column_name=conf.image_column_name,
-        batch_size=conf.batch_size,
-        num_workers=conf.num_workers,
-    )
+    def get_dataloader():
+        return get_context_target_dataloader(
+            config=conf.context_target_dataset,
+            dataset_pattern=conf.train_dataset_pattern,
+            dataset_length=conf.train_dataset_length,
+            seed=conf.seed,
+            image_column_name=conf.image_column_name,
+            batch_size=conf.batch_size,
+            num_workers=conf.num_workers,
+        )
+
+    dataloader = get_dataloader()
 
     model = IJEPAModel(conf.model).to(conf.torch_device)
 

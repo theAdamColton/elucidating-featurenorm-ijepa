@@ -1,19 +1,17 @@
 conf:
   mode: train
 
-  train_dataset_pattern: /nvme/imagenet1k/imagenet1k-train-{0000..1023}.tar
-  val_dataset_pattern: /nvme/imagenet1k/imagenet1k-validation-{00..63}.tar
-  validation_image_size: 512
-
   should_compile: true
   dtype: bfloat16
   device: cuda
 
-  steady_lr: 5e-4
-  num_lr_cooldown_steps: 100000
+  steady_lr: 1e-3
+  num_lr_steady_steps: 500000
+  num_lr_cooldown_steps: 230000
+  num_epochs: 800
   end_lr: 7e-5
 
-  batch_size: 128
+  batch_size: 320
   num_workers: 4
 
   num_register_tokens: 0
@@ -52,17 +50,17 @@ conf:
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.25
-    predictor_target_capacity: 0.25
+    predictor_context_capacity: 0.75
+    predictor_target_capacity: 0.142857
 
     sample_predictor_context_with_replacement: true
-    sample_predictor_targets_with_replacement: true
+    sample_predictor_targets_with_replacement: false
 
   context_target_dataset:
-    min_context_capacity: 0.25
-    max_context_capacity: 0.5
-    absolute_max_context_capacity: 0.25
+    min_context_capacity: 0.125
+    max_context_capacity: 0.75
+    absolute_max_context_capacity: 0.5
     mask_window_size: 2
-    max_side_length: 512
+    max_side_length: 256
     min_side_length: 64
 
