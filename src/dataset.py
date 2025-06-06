@@ -497,6 +497,8 @@ class ContextTargetSplitter:
         # Sample a number of context windows
         if num_total_windows == 2:
             num_context_windows = 1
+        elif min_num_context_windows >= max_num_context_windows:
+            num_context_windows = max_num_context_windows
         else:
             num_context_windows = self.rng.randint(
                 min_num_context_windows, max_num_context_windows
@@ -655,6 +657,7 @@ class ContextTargetDatasetConfig:
     def __post_init__(self):
         assert self.absolute_max_context_capacity <= self.max_context_capacity
         assert self.min_context_capacity <= self.max_context_capacity
+        assert self.min_context_capacity <= self.absolute_max_context_capacity
         assert self.max_side_length >= self.min_side_length
 
         # Resize images to this multiple
