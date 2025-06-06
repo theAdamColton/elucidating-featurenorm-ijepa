@@ -876,7 +876,13 @@ class PadTensorSet:
         return x
 
 
-def get_lidar_data(
+def combine_context_target_columns(row):
+    x_patches, y_patches = row.pop("x_patches"), row.pop("y_patches")
+    row["patches"] = ts.cat((x_patches, y_patches), 0)
+    return row
+
+
+def get_repeated_data(
     config: ContextTargetDatasetConfig = ContextTargetDatasetConfig(),
     dataset_pattern: str = "",
     image_column_name: str = "jpg",
@@ -941,14 +947,14 @@ def get_lidar_data(
                 rng=splitter_rng,
             )
         )
-        # Keep only the contexts
         .rename(
             x_patches="x_patches",
+            y_patches="y_patches",
             x_position_ids="x_position_ids",
+            y_position_ids="y_position_ids",
             sample_id="sample_id",
             keep=False,
         )
-        # Add register tokens to the context
         .map(
             RegisterTokenAdder(
                 num_register_tokens=config.num_register_tokens,
@@ -956,9 +962,17 @@ def get_lidar_data(
                 position_id_column_name="x_position_ids",
             )
         )
+        .map(
+            RegisterTokenAdder(
+                num_register_tokens=0,
+                token_column_name="y_patches",
+                position_id_column_name="y_position_ids",
+            )
+        )
         # Convert to TensorSet
         .map(PatchesToTensorSet())
         .map(AddSampleIdsToTensorSet("x_patches"))
+        .map(AddSampleIdsToTensorSet("y_patches"))
         # Pad contexts
         .map_dict(
             x_patches=PadTensorSet(
@@ -966,7 +980,15 @@ def get_lidar_data(
                 pad_value_dict=tensorset_pad_value_dict,
             )
         )
-        .to_tuple("x_patches")
+        # Pad targets
+        .map_dict(
+            y_patches=PadTensorSet(
+                config.max_num_target_patches,
+                pad_value_dict=tensorset_pad_value_dict,
+            )
+        )
+        .map(combine_context_target_columns)
+        .to_tuple("patches")
     )
 
     # Fetch augmented samples
