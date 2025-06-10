@@ -319,7 +319,11 @@ class Encoder(nn.Module):
             )
 
             if should_track_diffmoe_loss:
-                diffmoe_loss = diffmoe_loss + diffmoe_outputs[0]
+                if len(diffmoe_outputs) == 0:
+                    layer_diffmoe_loss = 0.0
+                else:
+                    layer_diffmoe_loss = diffmoe_outputs[0]
+                diffmoe_loss = diffmoe_loss + layer_diffmoe_loss
 
             if return_all_layer_features:
                 all_layer_features[i + 1] = x
@@ -489,7 +493,11 @@ class Predictor(nn.Module):
             )
 
             if should_track_diffmoe_loss:
-                diffmoe_loss = diffmoe_loss + diffmoe_outputs[0]
+                if len(diffmoe_outputs) == 0:
+                    layer_diffmoe_loss = 0.0
+                else:
+                    layer_diffmoe_loss = diffmoe_outputs[0]
+                diffmoe_loss = diffmoe_loss + layer_diffmoe_loss
 
         diffmoe_loss = diffmoe_loss / config.num_transformer_blocks
 

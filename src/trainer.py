@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import yaml
-from dataclasses import asdict
+import dataclasses
 
 from tqdm import tqdm
 import torch
@@ -141,7 +141,7 @@ class Trainer:
         print("Saved checkpoint to ", checkpoint_save_path)
 
         yaml_save_path = self.checkpoint_folder_path / "config.yaml"
-        conf_dict = asdict(self.conf)
+        conf_dict = dataclasses.asdict(self.conf)
         # Hack to allow loading from jsonargparse
         conf_dict = dict(conf=conf_dict)
         with open(yaml_save_path, "w") as f:
@@ -302,16 +302,28 @@ class Trainer:
             epoch=self.training_state["epoch"],
             num_total_samples=self.training_state["num_total_samples"],
             global_step=self.training_state["global_step"],
-            loss=loss.item(),
             lr=lr,
             ema_beta=ema_beta,
         )
 
-        # TODO cleanup
-        if result.smooth_rank is not None and isinstance(
-            result.smooth_rank, torch.Tensor
-        ):
-            log_dict["smooth_rank"] = result.smooth_rank.item()
+        def _add_to_log_dict(key, value):
+            if value is None:
+                return
+            if isinstance(value, torch.Tensor):
+                if value.ndim > 0:
+                    return
+
+                value = value.item()
+
+            if not isinstance(value, (float, int)):
+                return
+
+            log_dict[key] = value
+
+        for field in dataclasses.fields(result):
+            k = field.name
+            v = getattr(result, k)
+            _add_to_log_dict(k, v)
 
         # Compute the lidar score
         if should_log_lidar:
@@ -357,8 +369,11 @@ class Trainer:
             self.training_state["num_total_samples"] += log_dict["num_samples_in_batch"]
 
             prog_bar.update(1)
+            training_state_str = "".join(
+                f"{k}:{v} " for k, v in self.training_state.items()
+            )
             prog_bar.set_description(
-                f"{self.training_state} loss {round(log_dict['loss'], 3)}"
+                f"{training_state_str} loss:{round(log_dict['loss'], 3)}"
             )
 
             estimated_epoch = (
@@ -432,7 +447,7 @@ class Trainer:
         return accuracies
 
     def train(self):
-        conf_d = asdict(self.conf)
+        conf_d = dataclasses.asdict(self.conf)
         trainable_params = (p for p in self.model.parameters() if p.requires_grad)
         conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
 
@@ -449,6 +464,8 @@ class Trainer:
         while self.training_state["epoch"] < self.conf.num_epochs:
             if dataloader_stream is None:
                 dataloader_stream = iter(self.get_dataloader())
+
+            self.model.train()
 
             self.train_one_epoch(dataloader_stream, prog_bar)
             self.training_state["epoch"] += 1
@@ -482,7 +499,9 @@ class Trainer:
                 dataloader_stream = None
 
             if should_validate:
+                self.model.eval()
                 self.run_validation()
+                self.model.train()
 
             if self.conf.test_mode:
                 break

@@ -31,7 +31,7 @@ conf:
           should_use_qk_norm: true
         norm_mode: layernorm
         diffmoe_num_experts: 8
-        mlp_mode: vanilla
+        mlp_mode: diffmoe
       norm_out_mode: dyntanh
       norm_elementwise_affine: true
 
@@ -47,7 +47,7 @@ conf:
           should_use_qk_norm: true
         norm_mode: layernorm
         diffmoe_num_experts: 8
-        mlp_mode: vanilla
+        mlp_mode: diffmoe
       norm_out_mode: layernorm
 
     predictor_batch_repeat: 4
