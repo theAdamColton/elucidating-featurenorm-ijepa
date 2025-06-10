@@ -63,13 +63,13 @@ class DatasetTests(unittest.TestCase):
         h, w = 256, 256
         image = make_random_pil_image(h, w)
         rz = RandomImageResizer(
-            min_side_length=248,
+            min_side_length=64,
             max_side_length=256,
-            multiple_of=8,
+            multiple_of=32,
             max_num_pixels=h * w,
         )
 
-        trials = 20
+        trials = 40
         trial = 0
 
         while True:
