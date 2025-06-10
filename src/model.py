@@ -610,7 +610,7 @@ class IJEPAOutput(NamedTuple):
     smooth_rank: torch.Tensor | None = None
     tokenwise_loss: torch.Tensor | None = None
     predictor_target_token_ids: torch.Tensor | None = None
-    diffmoe_loss: torch.Tensor | None = None
+    diffmoe_loss: torch.Tensor | float = 0.0
 
 
 class IJEPAModel(nn.Module):
@@ -669,6 +669,7 @@ class IJEPAModel(nn.Module):
             # capacity allocation; it should make the ema_encoder
             # more robust to the extra long sequence length,
             # which is never seen during training.
+            self.ema_encoder.eval()
             target_hidden_states = self.ema_encoder(patches, token_ids).hidden_states
 
         y_token_ids = token_ids

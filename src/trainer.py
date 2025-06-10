@@ -186,12 +186,20 @@ class Trainer:
 
             patches, token_ids = self.prepare_context_target_batch(batch)
 
-            # TODO compile this encoder call
+            if self.conf.should_compile:
+                encoder = torch.compile(self.model.encoder)
+            else:
+                encoder = self.model.encoder
+
+            # TODO we use eval mode, which causes
+            # diffmoe to use dynamic allocation
+            self.model.eval()
             with torch.inference_mode():
                 with self.autocast_fn():
-                    encoder_hidden_states = self.model.encoder(
+                    encoder_hidden_states = encoder(
                         x=patches, token_ids=token_ids
                     ).hidden_states
+            self.model.train()
 
             sample_ids = token_ids[..., 0]
             is_sample_mask = sample_ids != MASK_SAMPLE_ID
@@ -277,9 +285,9 @@ class Trainer:
                 window_size=self.conf.context_target_dataset.mask_window_size,
             )
 
-        loss = result.loss
+        total_loss = result.loss + result.diffmoe_loss
 
-        self.grad_scaler.scale(loss).backward()
+        self.grad_scaler.scale(total_loss).backward()
         self.grad_scaler.step(self.optimizer)
         self.grad_scaler.update()
         self.optimizer.zero_grad()
@@ -342,9 +350,19 @@ class Trainer:
         log_dict["samples_per_second"] = num_samples_in_batch / elapsed
 
         if should_log:
-            log_dict["mask_rate"] = (
-                (token_ids[..., 0] == MASK_SAMPLE_ID).float().mean().item()
+            key_pad_mask = token_ids[..., 0] == MASK_SAMPLE_ID
+            log_dict["mask_rate"] = key_pad_mask.float().mean().item()
+
+            max_image_height = token_ids[..., -2].amax().item() * self.patch_size
+            max_image_width = token_ids[..., -1].amax().item() * self.patch_size
+            log_dict["max_image_height"] = max_image_height
+            log_dict["max_image_width"] = max_image_width
+
+            side_lengths = token_ids[..., -2:].float().mean(-1)
+            avg_side_length = (
+                side_lengths[~key_pad_mask].mean().item() * self.patch_size
             )
+            log_dict["avg_side_length"] = avg_side_length
 
             wandb.log(
                 log_dict,
@@ -371,7 +389,7 @@ class Trainer:
                 f"{k}:{v} " for k, v in self.training_state.items()
             )
             prog_bar.set_description(
-                f"{training_state_str} loss:{round(log_dict['loss'], 3)}"
+                f"{training_state_str}loss:{round(log_dict['loss'], 3)}"
             )
 
             estimated_epoch = (

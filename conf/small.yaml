@@ -12,7 +12,7 @@ conf:
   end_lr: 7e-5
 
   batch_size: 320
-  num_workers: 3
+  num_workers: 4
 
   num_register_tokens: 0
   validate_every_num_epochs: 50
@@ -53,8 +53,8 @@ conf:
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 0.375
-    predictor_target_capacity: 0.41667
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
 
     sample_predictor_context_with_replacement: true
     sample_predictor_targets_with_replacement: true
