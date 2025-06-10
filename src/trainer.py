@@ -265,7 +265,6 @@ class Trainer:
         return lr
 
     def ema_update(self, ema_beta: float):
-        # EMA update
         for (teacher_parameter_name, teacher_parameter), (
             student_parameter_name,
             student_parameter,
@@ -371,15 +370,28 @@ class Trainer:
             key_pad_mask = token_ids[..., 0] == MASK_SAMPLE_ID
             log_dict["mask_rate"] = key_pad_mask.float().mean().item()
 
-            max_image_height = token_ids[..., -2].amax().item() * self.patch_size
-            max_image_width = token_ids[..., -1].amax().item() * self.patch_size
+            # Plus 1 is because we index from 0
+            max_image_height = (token_ids[..., -2].amax().item() + 1) * self.patch_size
+            max_image_width = (token_ids[..., -1].amax().item() + 1) * self.patch_size
             log_dict["max_image_height"] = max_image_height
             log_dict["max_image_width"] = max_image_width
 
-            side_lengths = token_ids[..., -2:].float().mean(-1)
-            avg_side_length = (
-                side_lengths[~key_pad_mask].mean().item() * self.patch_size
-            )
+            sub_batch_size = min(token_ids.shape[0], 8)
+
+            sub_token_ids = token_ids[:sub_batch_size].cpu()
+            unique_ids = torch.unique(sub_token_ids[..., 0]).tolist()
+            if MASK_SAMPLE_ID in unique_ids:
+                unique_ids.remove(MASK_SAMPLE_ID)
+
+            side_lengths = []
+            for id in unique_ids:
+                mask = sub_token_ids == id
+                sample_token_ids = sub_token_ids[mask]
+                side_length = sample_token_ids[..., -2].amax(0).float().mean(-1).item()
+                side_length = (side_length + 1) * self.patch_size
+                side_lengths.append(side_length)
+            avg_side_length = torch.tensor(side_lengths).mean()
+
             log_dict["avg_side_length"] = avg_side_length
 
             wandb.log(

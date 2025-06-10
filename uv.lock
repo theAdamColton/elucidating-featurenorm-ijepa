@@ -296,8 +296,8 @@ wheels = [
 
 [[package]]
 name = "diffmoe"
-version = "0.1.0"
-source = { git = "https://github.com/theAdamColton/diffmoe.git?rev=852a16e1d23db94f8dedd20558effa79d627a583#852a16e1d23db94f8dedd20558effa79d627a583" }
+version = "0.1.1"
+source = { git = "https://github.com/theAdamColton/diffmoe.git?rev=18b17d8bbb1b840c0e56f0c4b14c07ea937fbcbd#18b17d8bbb1b840c0e56f0c4b14c07ea937fbcbd" }
 dependencies = [
     { name = "einx" },
     { name = "torch" },
@@ -537,7 +537,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.6.0" },
-    { name = "diffmoe", git = "https://github.com/theAdamColton/diffmoe.git?rev=852a16e1d23db94f8dedd20558effa79d627a583" },
+    { name = "diffmoe", git = "https://github.com/theAdamColton/diffmoe.git?rev=18b17d8bbb1b840c0e56f0c4b14c07ea937fbcbd" },
     { name = "einx", specifier = ">=0.3.0" },
     { name = "flash-attn", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.1.0/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-linux_x86_64.whl" },
     { name = "jsonargparse", extras = ["signatures"], specifier = ">=4.38.0" },
