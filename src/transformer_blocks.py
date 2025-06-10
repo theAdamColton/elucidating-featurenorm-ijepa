@@ -1,12 +1,12 @@
 from typing import Literal
+
 import einx
-import math
 import torch
-from torch.nn import init
 import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention
 from torch import nn
 from dataclasses import dataclass, field
+from diffmoe.diffmoe import DiffMoeMLP
 
 
 def apply_rotary_emb(
@@ -151,162 +151,6 @@ class Attention(nn.Module):
         return (self.proj_out(out), k)
 
 
-@dataclass
-class DiffMoeMLPConfig:
-    embed_dim: int = 64
-    mlp_ratio: int = 4
-    use_bias: bool = True
-
-    norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
-
-    num_experts: int = 8
-
-    capacity: float = 1.0
-    should_clip_capacity_to_pow2: bool = False
-
-
-class DiffMoeMLP(nn.Module):
-    """
-    DiffMOE as in:
-    DiffMoE: Dynamic Token Selection for Scalable Diffusion Transformers
-    https://arxiv.org/pdf/2503.14487
-
-    This is a work in progress
-
-    Currently there is no allocation predictor,
-    which means this DiffMoeMLP only works when you test
-    it with the exact same batch size as training - This
-    is because the model gets some very diluted information
-    about batch statistics from the top-k expert scores
-    being pooled across different samples.
-    """
-
-    def __init__(self, config: DiffMoeMLPConfig):
-        super().__init__()
-        self.config = config
-
-        if config.norm_mode == "layernorm":
-            self.norm = nn.LayerNorm(config.embed_dim)
-        elif config.norm_mode == "dyntanh":
-            self.norm = DynTanh(config.embed_dim)
-        else:
-            raise ValueError(config.norm_mode)
-
-        self.gate_proj = nn.Linear(config.embed_dim, config.num_experts, bias=False)
-
-        self.fc1s = nn.Parameter(
-            torch.empty(
-                config.num_experts,
-                config.embed_dim * config.mlp_ratio,
-                config.embed_dim,
-            )
-        )
-        init.kaiming_uniform_(self.fc1s, a=math.sqrt(5))
-
-        self.activation_fn = nn.GELU(approximate="tanh")
-
-        self.fc2s = nn.Parameter(
-            torch.empty(
-                config.num_experts,
-                config.embed_dim,
-                config.embed_dim * config.mlp_ratio,
-            )
-        )
-        init.kaiming_uniform_(self.fc2s, a=math.sqrt(5))
-
-        if config.use_bias:
-            self.b1s = nn.Parameter(
-                torch.empty(config.num_experts, config.embed_dim * config.mlp_ratio)
-            )
-
-            fan_in, _ = init._calculate_fan_in_and_fan_out(self.fc1s)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            init.uniform_(self.b1s, -bound, bound)
-
-            self.b2s = nn.Parameter(torch.empty(config.num_experts, config.embed_dim))
-
-            fan_in, _ = init._calculate_fan_in_and_fan_out(self.fc2s)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            init.uniform_(self.b2s, -bound, bound)
-
-    def forward(
-        self,
-        x,
-        mask=None,
-    ):
-        """
-        x: Shape: (... d)
-        mask: Optional, shape: (...)
-        Notation:
-        k: the total number of selected tokens
-        m: the total number of dropped tokens
-        d: input hidden channel size
-        dd: mlp hidden channel size
-        """
-        config = self.config
-
-        og_shape = x.shape
-        x = einx.rearrange("... d -> (...) d", x)
-        bs = x.shape[0]
-
-        # TODO
-        # this differs from the official diff-moe implementation
-        # I derive gate scores from unnormalized x, instead of
-        # normalized x
-        # And I use tanh scaled to [0,1], instead of softmax
-        scores = self.gate_proj(x)
-        # scores = scores.softmax(-1)
-        scores = (F.tanh(scores) + 1) / 2
-
-        if mask is not None:
-            mask = einx.rearrange("... -> (...) one", mask, one=1)
-            assert bs == mask.shape[0]
-            mask_value = -200
-            scores = scores.masked_fill(mask, mask_value)
-
-        # k is the total number of MLP forward passes over all experts
-        k = int(bs * self.config.capacity) // self.config.num_experts
-        if config.should_clip_capacity_to_pow2:
-            k = 2 ** int(math.log2(k))
-            k = max(k, 1)
-
-        sorted_expert_weights, sorted_expert_idx = scores.sort(0, descending=True)
-        kept_expert_weights, dropped_expert_weights = (
-            sorted_expert_weights[:k],
-            sorted_expert_weights[k:],
-        )
-        kept_expert_idx, dropped_expert_idx = (
-            sorted_expert_idx[:k],
-            sorted_expert_idx[k:],
-        )
-
-        kept_expert_idx = einx.rearrange("k n -> (k n)", kept_expert_idx)
-
-        # [b] d, (k n) -> (k n) d
-        y = torch.index_select(x, 0, kept_expert_idx)
-
-        y = self.norm(y)
-
-        y = einx.dot("(k n) d, n dd d -> (k n) dd", y, self.fc1s)
-        if self.config.use_bias:
-            y = einx.add("(k n) dd, n dd -> (k n) dd", y, self.b1s)
-
-        y = F.gelu(y, approximate="tanh")
-
-        y = einx.dot("(k n) dd, n d dd -> (k n) d", y, self.fc2s)
-        if self.config.use_bias:
-            y = einx.add("(k n) d, n d -> (k n) d", y, self.b2s)
-
-        y = einx.multiply("(k n) d, k n -> (k n) d", y, kept_expert_weights)
-        y = y.to(x.dtype)
-
-        x = torch.index_add(x, 0, kept_expert_idx, y)
-
-        x = x.reshape(og_shape)
-
-        return x
-
-
 class MLP(nn.Module):
     def __init__(self, dim=64):
         super().__init__()
@@ -326,6 +170,8 @@ class TransformerBlockConfig:
     embed_dim: int = 64
     attention_config: AttentionConfig = field(default_factory=lambda: AttentionConfig())
 
+    diffmoe_num_experts: int = 8
+    mlp_mode: Literal["vanilla", "diffmoe"] = "vanilla"
     norm_mode: Literal["layernorm", "dyntanh"] = "layernorm"
 
 
@@ -345,8 +191,18 @@ class TransformerBlock(nn.Module):
         self.norm1 = get_norm()
         self.attention = Attention(self.config.attention_config)
 
-        self.norm2 = get_norm()
-        self.mlp = MLP(config.embed_dim)
+        if config.mlp_mode == "vanilla":
+            self.norm2 = get_norm()
+            self.mlp = MLP(config.embed_dim)
+        elif config.mlp_mode == "diffmoe":
+            norm2 = get_norm()
+            self.mlp = DiffMoeMLP(
+                embed_dim=config.embed_dim,
+                norm_module=norm2,
+                num_experts=config.diffmoe_num_experts,
+            )
+        else:
+            raise ValueError(config.mlp_mode)
 
     def forward(
         self,
@@ -367,5 +223,14 @@ class TransformerBlock(nn.Module):
                 rotary_embeds=rotary_embeds,
             )[0]
         )
-        x = x + self.mlp(self.norm2(x))
-        return x
+
+        if self.config.mlp_mode == "vanilla":
+            x = x + self.mlp(self.norm2(x))
+            diffmoe_outputs = tuple()
+        elif self.config.mlp_mode == "diffmoe":
+            # integrated norm and residual
+            x, *diffmoe_outputs = self.mlp(x)
+        else:
+            raise ValueError(self.config.norm_mode)
+
+        return x, *diffmoe_outputs

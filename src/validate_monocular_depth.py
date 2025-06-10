@@ -11,7 +11,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from src.dataset import get_simple_dataloader, TorchImageResizer
-from src.model import IJEPAModel
+from src.model import EncoderOutput, IJEPAModel
 from src.utils import get_viz_output_path
 
 
@@ -210,11 +210,13 @@ def validate_monocular_depth_prediction(
         pixel_values = (pixel_values / 255) * 2 - 1
 
         with torch.inference_mode():
-            _, layer_features = encoder(
+            encoder_output: EncoderOutput = encoder(
                 x=pixel_values,
                 token_ids=token_ids,
                 return_all_layer_features=True,
             )
+
+        layer_features = encoder_output.all_layer_features
 
         features = layer_features[feature_depth].clone()
 

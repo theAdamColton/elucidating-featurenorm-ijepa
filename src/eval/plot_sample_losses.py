@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import tensorset as ts
 
 from src.dataset import MASK_SAMPLE_ID, ContextTargetDatasetConfig, get_repeated_data
-from src.model import IJEPAModel
+from src.model import IJEPAModel, IJEPAOutput
 from src.utils import get_viz_output_path
 from src.eval.utils import scale_to_zero_one
 
@@ -110,7 +110,7 @@ def plot_sample_losses(
 
         with torch.inference_mode():
             with autocast_fn():
-                result_dict = model(
+                result: IJEPAOutput = model(
                     patches,
                     token_ids,
                     context_sequence_length=context_sequence_length,
@@ -121,9 +121,9 @@ def plot_sample_losses(
 
         # tokenwise loss is the batch repeated loss
         # from the predictor
-        tokenwise_loss = result_dict["tokenwise_loss"].cpu().float()
+        tokenwise_loss = result.tokenwise_loss.cpu().float()
         # target sample_ids is batch repeated sequence ids fed to the predictor
-        target_token_ids = result_dict["predictor_target_token_ids"].cpu()
+        target_token_ids = result.predictor_target_token_ids.cpu()
 
         tokenwise_loss = einx.rearrange(
             "(r b) ys d -> r b ys d",
@@ -163,14 +163,9 @@ def plot_sample_losses(
                 loss_image = loss_images[id]
                 loss_count = loss_counts[id]
                 for (hid, wid), loss in zip(position_ids, losses):
-                    try:
-                        loss_image[hid, wid] += loss
+                    loss_image[hid, wid] += loss
 
-                        loss_count[hid, wid] += 1
-                    except:
-                        import bpdb
-
-                        bpdb.set_trace()
+                    loss_count[hid, wid] += 1
 
                 # Measure the mean sample loss, and the variance of the sample loss
                 sample_loss = losses.mean()

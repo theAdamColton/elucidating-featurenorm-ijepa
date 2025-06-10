@@ -16,7 +16,7 @@ import einx
 
 from main_conf import MainConfig
 from src.dataset import MASK_SAMPLE_ID, get_context_target_dataloader
-from src.model import IJEPAModel
+from src.model import IJEPAModel, IJEPAOutput
 from src.validate import validate
 from src.dataset import get_repeated_data
 from src.lidar import compute_lidar_score
@@ -189,9 +189,9 @@ class Trainer:
             # TODO compile this encoder call
             with torch.inference_mode():
                 with self.autocast_fn():
-                    encoder_hidden_states, *_ = self.model.encoder(
+                    encoder_hidden_states = self.model.encoder(
                         x=patches, token_ids=token_ids
-                    )
+                    ).hidden_states
 
             sample_ids = token_ids[..., 0]
             is_sample_mask = sample_ids != MASK_SAMPLE_ID
@@ -269,7 +269,7 @@ class Trainer:
         ) or should_log_lidar
 
         with self.autocast_fn():
-            result_dict = self.model(
+            result: IJEPAOutput = self.model(
                 patches=patches,
                 token_ids=token_ids,
                 context_sequence_length=self.conf.context_target_dataset.packer_context_sequence_length,
@@ -277,7 +277,7 @@ class Trainer:
                 window_size=self.conf.context_target_dataset.mask_window_size,
             )
 
-        loss = result_dict["loss"]
+        loss = result.loss
 
         self.grad_scaler.scale(loss).backward()
         self.grad_scaler.step(self.optimizer)
@@ -308,10 +308,10 @@ class Trainer:
         )
 
         # TODO cleanup
-        if "smooth_rank" in result_dict and isinstance(
-            result_dict["smooth_rank"], torch.Tensor
+        if result.smooth_rank is not None and isinstance(
+            result.smooth_rank, torch.Tensor
         ):
-            log_dict["smooth_rank"] = result_dict["smooth_rank"].item()
+            log_dict["smooth_rank"] = result.smooth_rank.item()
 
         # Compute the lidar score
         if should_log_lidar:

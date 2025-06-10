@@ -192,6 +192,13 @@ class EncoderConfig:
     norm_elementwise_affine: bool = True
 
 
+@dataclass
+class EncoderOutput:
+    hidden_states: torch.Tensor
+    all_layer_features: torch.Tensor | None = None
+    diffmoe_loss: torch.Tensor | float = 0.0
+
+
 class Encoder(nn.Module):
     def __init__(self, config=EncoderConfig()):
         super().__init__()
@@ -300,27 +307,41 @@ class Encoder(nn.Module):
 
             all_layer_features[0] = x
 
+        should_track_diffmoe_loss = config.block_config.mlp_mode == "diffmoe"
+        diffmoe_loss = 0
+
         for i, block in enumerate(self.blocks):
-            x = block(
+            x, *diffmoe_outputs = block(
                 x,
                 key_pad_mask=key_pad_mask,
                 attn_mask=attn_mask,
                 rotary_embeds=rotary_embeds,
             )
 
+            if should_track_diffmoe_loss:
+                diffmoe_loss = diffmoe_loss + diffmoe_outputs[0]
+
             if return_all_layer_features:
                 all_layer_features[i + 1] = x
+
+        diffmoe_loss = diffmoe_loss / config.num_transformer_blocks
 
         if config.norm_out_mode == "batchnorm":
             x = self.norm_out(x, sample_ids != MASK_SAMPLE_ID)
         else:
             x = self.norm_out(x)
 
-        if return_all_layer_features:
-            # Do not normalize layer features
-            return x, all_layer_features
+        result = EncoderOutput(
+            hidden_states=x,
+        )
 
-        return (x,)
+        if return_all_layer_features:
+            result.all_layer_features = all_layer_features
+
+        if should_track_diffmoe_loss:
+            result.diffmoe_loss = diffmoe_loss
+
+        return result
 
 
 @dataclass
@@ -404,7 +425,7 @@ class Predictor(nn.Module):
         x: torch.Tensor,
         token_ids: torch.Tensor,
         prediction_mask: torch.Tensor,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor | float]:
         config = self.config
 
         b, s, _ = x.shape
@@ -456,18 +477,26 @@ class Predictor(nn.Module):
         else:
             rotary_embeds = None
 
+        should_track_diffmoe_loss = config.block_config.mlp_mode == "diffmoe"
+        diffmoe_loss = 0.0
+
         for block in self.blocks:
-            x = block(
+            x, *diffmoe_outputs = block(
                 x,
                 key_pad_mask=key_pad_mask,
                 attn_mask=attn_mask,
                 rotary_embeds=rotary_embeds,
             )
 
+            if should_track_diffmoe_loss:
+                diffmoe_loss = diffmoe_loss + diffmoe_outputs[0]
+
+        diffmoe_loss = diffmoe_loss / config.num_transformer_blocks
+
         x = self.norm_out(x)
         x = self.proj_out(x)
 
-        return x
+        return x, diffmoe_loss
 
 
 def get_random_idx_with_replacement(
@@ -572,6 +601,15 @@ class IJEPAConfig:
     sample_predictor_targets_with_replacement: bool = True
 
 
+@dataclass
+class IJEPAOutput:
+    loss: torch.Tensor
+    smooth_rank: torch.Tensor | None = None
+    tokenwise_loss: torch.Tensor | None = None
+    predictor_target_token_ids: torch.Tensor | None = None
+    diffmoe_loss: torch.Tensor | None = None
+
+
 class IJEPAModel(nn.Module):
     def __init__(self, config=IJEPAConfig()):
         super().__init__()
@@ -621,7 +659,7 @@ class IJEPAModel(nn.Module):
         b, _, _ = patches.shape
 
         with torch.no_grad():
-            target_hidden_states, *_ = self.ema_encoder(patches, token_ids)
+            target_hidden_states = self.ema_encoder(patches, token_ids).hidden_states
 
         y_token_ids = token_ids
         if not config.should_predict_from_all_target:
@@ -669,7 +707,8 @@ class IJEPAModel(nn.Module):
         # Forward student with only the context patches
         x = patches[:, :context_sequence_length]
         x_token_ids = token_ids[:, :context_sequence_length]
-        x, *_ = self.encoder(x, x_token_ids)
+        student_outputs: EncoderOutput = self.encoder(x, x_token_ids)
+        x = student_outputs.hidden_states
 
         # Window patches and get idx indicating context and target regions for the predictor
         # This expects that the input data is already arranged in windows
@@ -808,7 +847,9 @@ class IJEPAModel(nn.Module):
         if not self.did_forward_once:
             print("predictor inputs:", x.shape)
 
-        x = self.predictor(x, combined_token_ids, prediction_mask=prediction_mask)
+        x, predictor_diffmoe_loss = self.predictor(
+            x, combined_token_ids, prediction_mask=prediction_mask
+        )
 
         predictions = x[:, num_ctx_tokens:]
 
@@ -823,17 +864,21 @@ class IJEPAModel(nn.Module):
             target_register_ids = target_token_ids[:, :, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SAMPLE_ID)
 
-        result_dict = dict(smooth_rank=smooth_rank)
+        result = IJEPAOutput(
+            loss=None,
+            smooth_rank=smooth_rank,
+            diffmoe_loss=student_outputs.diffmoe_loss + predictor_diffmoe_loss,
+        )
 
         if return_tokenwise_loss:
-            result_dict["tokenwise_loss"] = loss
+            result.tokenwise_loss = loss
 
         if return_predictor_target_token_ids:
-            result_dict["predictor_target_token_ids"] = target_token_ids
+            result.predictor_target_token_ids = target_token_ids
 
         loss = loss[is_target_mask].mean()
-        result_dict["loss"] = loss
+        result.loss = loss
 
         self.did_forward_once = True
 
-        return result_dict
+        return result

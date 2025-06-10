@@ -12,7 +12,7 @@ conf:
   end_lr: 7e-5
 
   batch_size: 320
-  num_workers: 4
+  num_workers: 3
 
   num_register_tokens: 0
   validate_every_num_epochs: 50
@@ -30,6 +30,8 @@ conf:
           num_attention_heads: 6
           should_use_qk_norm: true
         norm_mode: layernorm
+        diffmoe_num_experts: 8
+        mlp_mode: vanilla
       norm_out_mode: dyntanh
       norm_elementwise_affine: true
 
@@ -44,6 +46,8 @@ conf:
           num_attention_heads: 4
           should_use_qk_norm: true
         norm_mode: layernorm
+        diffmoe_num_experts: 8
+        mlp_mode: vanilla
       norm_out_mode: layernorm
 
     predictor_batch_repeat: 4
@@ -51,14 +55,14 @@ conf:
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.75
-    predictor_target_capacity: 0.142857
+    predictor_target_capacity: 0.25
 
     sample_predictor_context_with_replacement: true
-    sample_predictor_targets_with_replacement: false
+    sample_predictor_targets_with_replacement: true
 
   context_target_dataset:
-    min_context_capacity: 0.125
-    max_context_capacity: 0.75
+    min_context_capacity: 0.25
+    max_context_capacity: 0.5
     absolute_max_context_capacity: 0.5
     mask_window_size: 2
     max_side_length: 256

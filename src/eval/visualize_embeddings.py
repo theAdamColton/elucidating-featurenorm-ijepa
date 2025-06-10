@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import tensorset as ts
 
 from src.dataset import MASK_SAMPLE_ID
+from src.model import EncoderOutput
 from src.utils import get_viz_output_path
 from src.eval.utils import scale_to_zero_one
 
@@ -160,10 +161,12 @@ def visualize_embeddings(
 
     with autocast_fn():
         with torch.inference_mode():
-            _, all_layer_features = model.encoder(
+            encoder_output: EncoderOutput = model.encoder(
                 x=patches, token_ids=token_ids, return_all_layer_features=True
             )
-            features = all_layer_features[feature_depth]
+
+    all_layer_features = encoder_output.all_layer_features
+    features = all_layer_features[feature_depth]
 
     *_, hidden_d = features.shape
 

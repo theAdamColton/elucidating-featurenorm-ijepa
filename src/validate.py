@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import tensorset as ts
 
 from src.dataset import get_simple_dataloader
-from src.model import IJEPAModel
+from src.model import EncoderOutput, IJEPAModel
 
 
 class MultiDepthClassifier(nn.Module):
@@ -153,26 +153,20 @@ def validate(
 
                     token_ids = token_ids.to(device)
 
-                    if validation_extraction_mode == "extract-layers":
-                        with autocast_fn():
-                            with torch.inference_mode():
-                                _, layer_features = encoder(
-                                    pixel_values,
-                                    token_ids,
-                                    return_all_layer_features=True,
-                                )
+                    with autocast_fn():
+                        with torch.inference_mode():
+                            result: EncoderOutput = encoder(
+                                pixel_values,
+                                token_ids,
+                                return_all_layer_features=True,
+                            )
+                    layer_features = result.all_layer_features
 
+                    if validation_extraction_mode == "extract-layers":
                         layer_features = einx.mean("n b s d -> b n d", layer_features)
 
                     elif validation_extraction_mode == "lastlayer":
-                        with autocast_fn():
-                            with torch.inference_mode():
-                                layer_features, *_ = encoder(
-                                    pixel_values,
-                                    token_ids,
-                                    return_all_layer_features=True,
-                                )
-
+                        layer_features = layer_features[-1]
                         layer_features = einx.mean(
                             "b s d -> b one d", layer_features, one=1
                         )
