@@ -229,7 +229,7 @@ class TransformerBlock(nn.Module):
             diffmoe_outputs = tuple()
         elif self.config.mlp_mode == "diffmoe":
             # integrated norm and residual
-            x, *diffmoe_outputs = self.mlp(x)
+            x, *diffmoe_outputs = self.mlp(x, padding_mask=key_pad_mask)
         else:
             raise ValueError(self.config.norm_mode)
 

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, NamedTuple
 import torch
 from torch import nn
 from torch.nn import init
@@ -192,8 +192,7 @@ class EncoderConfig:
     norm_elementwise_affine: bool = True
 
 
-@dataclass
-class EncoderOutput:
+class EncoderOutput(NamedTuple):
     hidden_states: torch.Tensor
     all_layer_features: torch.Tensor | None = None
     diffmoe_loss: torch.Tensor | float = 0.0
@@ -295,6 +294,7 @@ class Encoder(nn.Module):
 
         key_pad_mask = sample_ids == MASK_SAMPLE_ID
 
+        all_layer_features = None
         if return_all_layer_features:
             all_layer_features = torch.empty(
                 config.num_transformer_blocks + 1,
@@ -308,7 +308,7 @@ class Encoder(nn.Module):
             all_layer_features[0] = x
 
         should_track_diffmoe_loss = config.block_config.mlp_mode == "diffmoe"
-        diffmoe_loss = 0
+        diffmoe_loss = 0.0
 
         for i, block in enumerate(self.blocks):
             x, *diffmoe_outputs = block(
@@ -337,13 +337,9 @@ class Encoder(nn.Module):
 
         result = EncoderOutput(
             hidden_states=x,
+            all_layer_features=all_layer_features,
+            diffmoe_loss=diffmoe_loss,
         )
-
-        if return_all_layer_features:
-            result.all_layer_features = all_layer_features
-
-        if should_track_diffmoe_loss:
-            result.diffmoe_loss = diffmoe_loss
 
         return result
 
@@ -609,8 +605,7 @@ class IJEPAConfig:
     sample_predictor_targets_with_replacement: bool = True
 
 
-@dataclass
-class IJEPAOutput:
+class IJEPAOutput(NamedTuple):
     loss: torch.Tensor
     smooth_rank: torch.Tensor | None = None
     tokenwise_loss: torch.Tensor | None = None
@@ -666,7 +661,14 @@ class IJEPAModel(nn.Module):
 
         b, _, _ = patches.shape
 
-        with torch.no_grad():
+        with torch.inference_mode():
+            # TODO, Because we are in inference_mode,
+            # the diffmoe mlp will use the capacity predictor
+            # to allocate capacity.
+            # I think this is better than using the default
+            # capacity allocation; it should make the ema_encoder
+            # more robust to the extra long sequence length,
+            # which is never seen during training.
             target_hidden_states = self.ema_encoder(patches, token_ids).hidden_states
 
         y_token_ids = token_ids
@@ -872,20 +874,17 @@ class IJEPAModel(nn.Module):
             target_register_ids = target_token_ids[:, :, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SAMPLE_ID)
 
+        mean_loss = loss[is_target_mask].mean()
+
         result = IJEPAOutput(
-            loss=None,
+            loss=mean_loss,
             smooth_rank=smooth_rank,
             diffmoe_loss=student_outputs.diffmoe_loss + predictor_diffmoe_loss,
+            tokenwise_loss=loss if return_tokenwise_loss else None,
+            predictor_target_token_ids=target_token_ids
+            if return_predictor_target_token_ids
+            else None,
         )
-
-        if return_tokenwise_loss:
-            result.tokenwise_loss = loss
-
-        if return_predictor_target_token_ids:
-            result.predictor_target_token_ids = target_token_ids
-
-        loss = loss[is_target_mask].mean()
-        result.loss = loss
 
         self.did_forward_once = True
 

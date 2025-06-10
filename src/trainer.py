@@ -320,9 +320,7 @@ class Trainer:
 
             log_dict[key] = value
 
-        for field in dataclasses.fields(result):
-            k = field.name
-            v = getattr(result, k)
+        for k, v in result._asdict().items():
             _add_to_log_dict(k, v)
 
         # Compute the lidar score
