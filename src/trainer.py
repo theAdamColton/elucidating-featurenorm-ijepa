@@ -264,6 +264,31 @@ class Trainer:
 
         return lr
 
+    def ema_update(self, ema_beta: float):
+        # EMA update
+        for (teacher_parameter_name, teacher_parameter), (
+            student_parameter_name,
+            student_parameter,
+        ) in zip(
+            self.model.ema_encoder.named_parameters(),
+            self.model.encoder.named_parameters(),
+        ):
+            assert teacher_parameter_name == student_parameter_name, (
+                f"{teacher_parameter_name}!={student_parameter_name}"
+            )
+
+            should_lerp = (
+                student_parameter.is_floating_point()
+                and student_parameter.requires_grad
+            )
+
+            if should_lerp:
+                teacher_parameter.lerp_(student_parameter, 1 - ema_beta)
+            else:
+                # rope parameters, diffmoe thresholds,
+                # running batchnorm means
+                teacher_parameter.copy_(student_parameter)
+
     def train_step(self, batch, start_time):
         patches, token_ids = self.prepare_context_target_batch(batch)
 
@@ -297,14 +322,7 @@ class Trainer:
             g["lr"] = lr
 
         ema_beta = self.ema_beta
-        # EMA update
-        for ema_p, p in zip(
-            self.model.ema_encoder.parameters(), self.model.encoder.parameters()
-        ):
-            if p.is_floating_point():
-                ema_p.lerp_(p, 1 - ema_beta)
-            else:
-                ema_p.copy_(p)
+        self.ema_update(ema_beta)
 
         log_dict = dict(
             epoch=self.training_state["epoch"],

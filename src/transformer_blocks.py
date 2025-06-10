@@ -234,9 +234,8 @@ class TransformerBlock(nn.Module):
             # many dynamic shapes
             b, s, _ = x.shape
             bs = b * s
-            k = bs // self.config.diffmoe_num_experts
-            dynamic_padding_mult = 2 ** math.floor(math.log2(k))
-            dynamic_padding_mult = max(8, dynamic_padding_mult)
+            dynamic_padding_mult = 2 ** (1 - math.floor(math.log2(bs)))
+            dynamic_padding_mult = max(16, dynamic_padding_mult)
 
             # integrated norm and residual
             x, *diffmoe_outputs = self.mlp(
