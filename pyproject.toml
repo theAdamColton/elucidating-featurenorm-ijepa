@@ -30,4 +30,4 @@ dev = [
 # This is hardcoded to cuda12.8 and torch 2.7 and python 3.12
 [tool.uv.sources]
 flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.1.0/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-linux_x86_64.whl" }
-diffmoe = { git = "https://github.com/theAdamColton/diffmoe.git", rev = "ac8881927c1f8761735fbe2a3889d5e1315b8306" }
+diffmoe = { git = "https://github.com/theAdamColton/diffmoe.git", rev = "852a16e1d23db94f8dedd20558effa79d627a583" }

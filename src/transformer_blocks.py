@@ -1,3 +1,4 @@
+import math
 from typing import Literal
 
 import einx
@@ -228,8 +229,19 @@ class TransformerBlock(nn.Module):
             x = x + self.mlp(self.norm2(x))
             diffmoe_outputs = tuple()
         elif self.config.mlp_mode == "diffmoe":
+            # set the dynamic padding mult to a large number
+            # so that torch.compile doesn't have to deal with
+            # many dynamic shapes
+            b, s, _ = x.shape
+            bs = b * s
+            k = bs // self.config.diffmoe_num_experts
+            dynamic_padding_mult = 2 ** math.floor(math.log2(k))
+            dynamic_padding_mult = max(8, dynamic_padding_mult)
+
             # integrated norm and residual
-            x, *diffmoe_outputs = self.mlp(x, padding_mask=key_pad_mask)
+            x, *diffmoe_outputs = self.mlp(
+                x, padding_mask=key_pad_mask, dynamic_padding_mult=dynamic_padding_mult
+            )
         else:
             raise ValueError(self.config.norm_mode)
 
