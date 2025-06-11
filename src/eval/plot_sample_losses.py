@@ -53,6 +53,8 @@ def plot_sample_losses(
     context_sequence_length = context_target_dataset.packer_context_sequence_length
     window_size = context_target_dataset.mask_window_size
 
+    model.eval()
+
     data: ts.TensorSet = get_repeated_data(
         config=context_target_dataset,
         seed=seed,

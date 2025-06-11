@@ -93,6 +93,7 @@ def validate(
     num_register_tokens: int = 0,
 ):
     encoder = model.ema_encoder
+    encoder.eval()
     num_features = encoder.hidden_size
     device = next(iter(encoder.parameters())).device
     num_feature_depth = model.config.encoder.num_transformer_blocks + 1

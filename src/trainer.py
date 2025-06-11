@@ -148,6 +148,15 @@ class Trainer:
             yaml.dump(conf_dict, f)
 
     def compute_lidar_score(self):
+        # TODO we use eval mode, which causes
+        # diffmoe to use dynamic allocation
+        self.model.eval()
+
+        if self.conf.should_compile:
+            encoder = torch.compile(self.model.encoder)
+        else:
+            encoder = self.model.encoder
+
         conf = self.conf
         if self.lidar_data is None:
             lidar_data = get_repeated_data(
@@ -186,20 +195,11 @@ class Trainer:
 
             patches, token_ids = self.prepare_context_target_batch(batch)
 
-            if self.conf.should_compile:
-                encoder = torch.compile(self.model.encoder)
-            else:
-                encoder = self.model.encoder
-
-            # TODO we use eval mode, which causes
-            # diffmoe to use dynamic allocation
-            self.model.eval()
             with torch.inference_mode():
                 with self.autocast_fn():
                     encoder_hidden_states = encoder(
                         x=patches, token_ids=token_ids
                     ).hidden_states
-            self.model.train()
 
             sample_ids = token_ids[..., 0]
             is_sample_mask = sample_ids != MASK_SAMPLE_ID
@@ -291,6 +291,8 @@ class Trainer:
                 teacher_parameter.copy_(student_parameter)
 
     def train_step(self, batch, start_time):
+        self.model.train()
+
         patches, token_ids = self.prepare_context_target_batch(batch)
 
         should_log_lidar = (
@@ -512,8 +514,6 @@ class Trainer:
             if dataloader_stream is None:
                 dataloader_stream = iter(self.get_dataloader())
 
-            self.model.train()
-
             self.train_one_epoch(dataloader_stream, prog_bar)
             self.training_state["epoch"] += 1
 
@@ -546,9 +546,7 @@ class Trainer:
                 dataloader_stream = None
 
             if should_validate:
-                self.model.eval()
                 self.run_validation()
-                self.model.train()
 
             if self.conf.test_mode:
                 break

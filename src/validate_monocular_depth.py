@@ -194,6 +194,7 @@ def validate_monocular_depth_prediction(
         return dl
 
     encoder = model.ema_encoder
+    encoder.eval()
 
     device = next(p.device for p in encoder.parameters())
 

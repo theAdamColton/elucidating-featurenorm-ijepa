@@ -159,9 +159,11 @@ def visualize_embeddings(
 
     b, s, d = patches.shape
 
+    model.eval()
+
     with autocast_fn():
         with torch.inference_mode():
-            encoder_output: EncoderOutput = model.encoder(
+            encoder_output: EncoderOutput = model.ema_encoder(
                 x=patches, token_ids=token_ids, return_all_layer_features=True
             )
 
