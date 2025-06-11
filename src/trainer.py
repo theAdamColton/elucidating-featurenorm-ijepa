@@ -279,13 +279,15 @@ class Trainer:
             should_lerp = (
                 student_parameter.is_floating_point()
                 and student_parameter.requires_grad
+                or "capacity_predictor_thresholds.parameter" in student_parameter_name
             )
 
             if should_lerp:
+                # trainable parameters, and capacity thresholds
                 teacher_parameter.lerp_(student_parameter, 1 - ema_beta)
             else:
-                # rope parameters, diffmoe thresholds,
-                # running batchnorm means
+                # rope parameters, bool is_initted
+                # running batchnorm means and vars
                 teacher_parameter.copy_(student_parameter)
 
     def train_step(self, batch, start_time):
@@ -376,8 +378,7 @@ class Trainer:
             log_dict["max_image_height"] = max_image_height
             log_dict["max_image_width"] = max_image_width
 
-            sub_batch_size = min(token_ids.shape[0], 8)
-
+            sub_batch_size = 8
             sub_token_ids = token_ids[:sub_batch_size].cpu()
             unique_ids = torch.unique(sub_token_ids[..., 0]).tolist()
             if MASK_SAMPLE_ID in unique_ids:
@@ -385,12 +386,12 @@ class Trainer:
 
             side_lengths = []
             for id in unique_ids:
-                mask = sub_token_ids == id
+                mask = sub_token_ids[..., 0] == id
                 sample_token_ids = sub_token_ids[mask]
-                side_length = sample_token_ids[..., -2].amax(0).float().mean(-1).item()
+                side_length = sample_token_ids[..., -2:].amax(0).float().mean(-1).item()
                 side_length = (side_length + 1) * self.patch_size
                 side_lengths.append(side_length)
-            avg_side_length = torch.tensor(side_lengths).mean()
+            avg_side_length = torch.tensor(side_lengths).mean().item()
 
             log_dict["avg_side_length"] = avg_side_length
 
