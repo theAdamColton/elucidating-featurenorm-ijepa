@@ -419,11 +419,14 @@ class RandomImageResizer:
             new_image_size = tuple(int(size * scale) for size in new_image_size)
 
         # Ensure that the new size is a divisible by multiple of
-        # and is at least multiple of
+        # and is at least multiple of and is at most self.max_side_length
         new_image_size = tuple(
             int(round(size / multiple_of)) * multiple_of for size in new_image_size
         )
         new_image_size = tuple(max(size, multiple_of) for size in new_image_size)
+        new_image_size = tuple(
+            min(size, self.max_side_length) for size in new_image_size
+        )
 
         # Ensure that there are enough multiple_ofs in the new size
         factor = min(size // multiple_of for size in new_image_size)
