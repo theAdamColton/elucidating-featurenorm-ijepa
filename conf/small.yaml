@@ -50,7 +50,7 @@ conf:
       norm_out_mode: layernorm
 
     predictor_batch_repeat: 4
-    target_norm_mode: disabled
+    target_norm_mode: running-batchnorm-singleton
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25

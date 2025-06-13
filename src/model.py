@@ -594,7 +594,11 @@ class IJEPAConfig:
     should_predict_from_all_target: bool = False
 
     target_norm_mode: Literal[
-        "layernorm", "disabled", "batchnorm", "running-batchnorm"
+        "layernorm",
+        "disabled",
+        "batchnorm",
+        "running-batchnorm",
+        "running-batchnorm-singleton",
     ] = "layernorm"
 
     predictor_batch_repeat: int = 8
@@ -626,6 +630,9 @@ class IJEPAModel(nn.Module):
 
         if config.target_norm_mode == "running-batchnorm":
             self.running_batchnorm = RunningBatchNorm(self.encoder.hidden_size)
+
+        elif config.target_norm_mode == "running-batchnorm-singleton":
+            self.running_batchnorm = RunningBatchNorm(1)
 
         self.predictor = Predictor(config.predictor)
 
@@ -702,6 +709,14 @@ class IJEPAModel(nn.Module):
         elif config.target_norm_mode == "running-batchnorm":
             mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
             target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
+
+        elif config.target_norm_mode == "running-batchnorm-singleton":
+            mask = y_token_ids[..., 0] != MASK_SAMPLE_ID
+            # b ts d -> b ts d 1
+            target_hidden_states = target_hidden_states.unsqueeze(-1)
+            target_hidden_states = self.running_batchnorm(target_hidden_states, mask)
+            # b ts d 1 -> b ts d
+            target_hidden_states = target_hidden_states.squeeze(-1)
 
         elif config.target_norm_mode == "disabled":
             pass
