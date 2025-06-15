@@ -532,7 +532,7 @@ class Trainer:
 
         dataloader_stream = None
 
-        while self.training_state["epoch"] < self.conf.num_epochs:
+        while True:
             if dataloader_stream is None:
                 dataloader_stream = iter(self.get_dataloader())
 
@@ -571,6 +571,9 @@ class Trainer:
                 self.run_validation()
 
             if self.conf.test_mode:
+                break
+
+            if is_last_epoch:
                 break
 
             self.save_checkpoint()

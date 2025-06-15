@@ -1,3 +1,5 @@
+# batch size 384, about 1415 samples per batch
+# 350 epochs, with 894 steps per epoch, a total of about 313000 steps
 conf:
   mode: train
 
@@ -6,8 +8,9 @@ conf:
   device: cuda
 
   steady_lr: 1e-3
-  num_lr_steady_steps: 300000
-  num_lr_cooldown_steps: 100000
+  num_lr_steady_steps: 250000
+  num_lr_cooldown_steps: 50000
+  ema_beta_steady_steps: 300000
   num_epochs: 350
   end_lr: 7e-5
 
