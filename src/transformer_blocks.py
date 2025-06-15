@@ -228,6 +228,7 @@ class TransformerBlock(nn.Module):
         if self.config.mlp_mode == "vanilla":
             x = x + self.mlp(self.norm2(x))
             diffmoe_outputs = tuple()
+
         elif self.config.mlp_mode == "diffmoe":
             # set the dynamic padding mult to a large number
             # so that torch.compile doesn't have to deal with

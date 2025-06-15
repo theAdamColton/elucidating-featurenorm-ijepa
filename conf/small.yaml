@@ -6,12 +6,12 @@ conf:
   device: cuda
 
   steady_lr: 1e-3
-  num_lr_steady_steps: 500000
-  num_lr_cooldown_steps: 230000
-  num_epochs: 800
+  num_lr_steady_steps: 300000
+  num_lr_cooldown_steps: 100000
+  num_epochs: 350
   end_lr: 7e-5
 
-  batch_size: 320
+  batch_size: 384
   num_workers: 4
 
   num_register_tokens: 0
@@ -30,10 +30,9 @@ conf:
           num_attention_heads: 6
           should_use_qk_norm: true
         norm_mode: layernorm
-        diffmoe_num_experts: 8
-        mlp_mode: diffmoe
+        mlp_mode: vanilla
       norm_out_mode: dyntanh
-      norm_elementwise_affine: true
+      norm_elementwise_affine: false
 
     predictor:
       input_size: 384
@@ -50,7 +49,7 @@ conf:
       norm_out_mode: layernorm
 
     predictor_batch_repeat: 4
-    target_norm_mode: running-batchnorm-singleton
+    target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
     predictor_context_capacity: 0.25

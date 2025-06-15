@@ -20,19 +20,7 @@ from src.model import IJEPAModel, IJEPAOutput
 from src.validate import validate
 from src.dataset import get_repeated_data
 from src.lidar import compute_lidar_score
-
-
-def masked_mean(x, mask):
-    b, s, d = x.shape
-    assert einx.matches("b s", mask, b=b, s=s)
-
-    x = einx.multiply("b s d, b s", x, mask)
-    x = einx.sum("b [s] d", x)
-    num_unmasked = einx.sum("b [s]", mask)
-    num_unmasked.clip_(1)
-    x = einx.divide("b d, b", x, num_unmasked)
-
-    return x
+from src.ops import masked_mean_over_sequence_dim
 
 
 class Trainer:
@@ -60,7 +48,7 @@ class Trainer:
         self.log_file_path = self.checkpoint_folder_path / "training_log.jsonl"
 
         if conf.should_compile:
-            self.model = torch.compile(self.model)
+            self.model = torch.compile(self.model, fullgraph=True, dynamic=False)
 
         self.lidar_data = None
 
@@ -206,7 +194,9 @@ class Trainer:
 
             encoder_hidden_states = encoder_hidden_states.float()
             # b [s] d
-            encoder_hidden_states = masked_mean(encoder_hidden_states, is_sample_mask)
+            encoder_hidden_states = masked_mean_over_sequence_dim(
+                encoder_hidden_states, is_sample_mask
+            )
 
             features.append(encoder_hidden_states)
 
@@ -290,40 +280,41 @@ class Trainer:
                 # running batchnorm means and vars
                 teacher_parameter.copy_(student_parameter)
 
-    def train_step(self, batch, start_time):
+    def step_model(
+        self, patches: torch.Tensor, token_ids: torch.Tensor, log_smooth_rank=False
+    ):
         self.model.train()
-
-        patches, token_ids = self.prepare_context_target_batch(batch)
-
-        should_log_lidar = (
-            self.training_state["global_step"] % self.conf.log_lidar_every_num_steps
-            == 0
-        )
-
-        should_log = (
-            self.training_state["global_step"] % self.conf.log_every_num_steps == 0
-        ) or should_log_lidar
 
         with self.autocast_fn():
             result: IJEPAOutput = self.model(
                 patches=patches,
                 token_ids=token_ids,
                 context_sequence_length=self.conf.context_target_dataset.packer_context_sequence_length,
-                return_smooth_rank=should_log,
+                return_smooth_rank=log_smooth_rank,
                 window_size=self.conf.context_target_dataset.mask_window_size,
+                return_predictor_target_token_ids=True,
+                return_tokenwise_loss=True,
             )
 
-        total_loss = result.loss + result.diffmoe_loss
+        # take the loss over non padding tokens
+        loss_mask = result.is_target_mask
+        # accurate masked mean
+        loss = result.tokenwise_loss[loss_mask].mean()
+
+        # Combine IJEPA loss and diffmoe_loss (which might be zero)
+        total_loss = loss + result.diffmoe_loss
+
+        # Step student model
+        lr = self.lr
+        for g in self.optimizer.param_groups:
+            g["lr"] = lr
 
         self.grad_scaler.scale(total_loss).backward()
         self.grad_scaler.step(self.optimizer)
         self.grad_scaler.update()
         self.optimizer.zero_grad()
 
-        lr = self.lr
-        for g in self.optimizer.param_groups:
-            g["lr"] = lr
-
+        # Step ema model
         ema_beta = self.ema_beta
         self.ema_update(ema_beta)
 
@@ -335,7 +326,7 @@ class Trainer:
             ema_beta=ema_beta,
         )
 
-        def _add_to_log_dict(key, value):
+        def safe_add_to_log_dict(key, value):
             if value is None:
                 return
             if isinstance(value, torch.Tensor):
@@ -350,65 +341,95 @@ class Trainer:
             log_dict[key] = value
 
         for k, v in result._asdict().items():
-            _add_to_log_dict(k, v)
+            safe_add_to_log_dict(k, v)
 
-        # Compute the lidar score
-        if should_log_lidar:
-            log_dict["lidar_score"] = self.compute_lidar_score()
+        safe_add_to_log_dict("loss", loss)
 
-        # Count the total number of samples in this batch
-        num_samples_in_batch = 0
-        for ids_seq in token_ids[..., 0].cpu():
-            ids = torch.unique(ids_seq).tolist()
-            if MASK_SAMPLE_ID in ids:
-                ids.remove(MASK_SAMPLE_ID)
-            num_samples_in_batch += len(ids)
+        return log_dict
 
-        log_dict["num_samples_in_batch"] = num_samples_in_batch
+    def compute_additional_metrics(self, token_ids):
+        log_dict = {}
 
-        elapsed = time.time() - start_time
-        log_dict["step_time"] = elapsed
-        log_dict["samples_per_second"] = num_samples_in_batch / elapsed
+        key_pad_mask = token_ids[..., 0] == MASK_SAMPLE_ID
+        log_dict["mask_rate"] = key_pad_mask.float().mean().item()
 
-        if should_log:
-            key_pad_mask = token_ids[..., 0] == MASK_SAMPLE_ID
-            log_dict["mask_rate"] = key_pad_mask.float().mean().item()
+        # Plus 1 is because we index from 0
+        max_image_height = (token_ids[..., -2].amax().item() + 1) * self.patch_size
+        max_image_width = (token_ids[..., -1].amax().item() + 1) * self.patch_size
+        log_dict["max_image_height"] = max_image_height
+        log_dict["max_image_width"] = max_image_width
 
-            # Plus 1 is because we index from 0
-            max_image_height = (token_ids[..., -2].amax().item() + 1) * self.patch_size
-            max_image_width = (token_ids[..., -1].amax().item() + 1) * self.patch_size
-            log_dict["max_image_height"] = max_image_height
-            log_dict["max_image_width"] = max_image_width
+        sub_batch_size = 8
+        sub_token_ids = token_ids[:sub_batch_size]
+        unique_ids = torch.unique(sub_token_ids[..., 0]).tolist()
+        if MASK_SAMPLE_ID in unique_ids:
+            unique_ids.remove(MASK_SAMPLE_ID)
 
-            sub_batch_size = 8
-            sub_token_ids = token_ids[:sub_batch_size].cpu()
-            unique_ids = torch.unique(sub_token_ids[..., 0]).tolist()
-            if MASK_SAMPLE_ID in unique_ids:
-                unique_ids.remove(MASK_SAMPLE_ID)
+        side_lengths = []
+        for id in unique_ids:
+            mask = sub_token_ids[..., 0] == id
+            sample_token_ids = sub_token_ids[mask]
+            side_length = sample_token_ids[..., -2:].amax(0).float().mean(-1).item()
+            side_length = (side_length + 1) * self.patch_size
+            side_lengths.append(side_length)
+        avg_side_length = torch.tensor(side_lengths).mean().item()
 
-            side_lengths = []
-            for id in unique_ids:
-                mask = sub_token_ids[..., 0] == id
-                sample_token_ids = sub_token_ids[mask]
-                side_length = sample_token_ids[..., -2:].amax(0).float().mean(-1).item()
-                side_length = (side_length + 1) * self.patch_size
-                side_lengths.append(side_length)
-            avg_side_length = torch.tensor(side_lengths).mean().item()
-
-            log_dict["avg_side_length"] = avg_side_length
-
-            wandb.log(
-                log_dict,
-                step=self.training_state["global_step"],
-            )
+        log_dict["avg_side_length"] = avg_side_length
 
         return log_dict
 
     def train_one_epoch(self, dataloader_stream, prog_bar):
         while True:
+            should_log_lidar = (
+                self.training_state["global_step"] % self.conf.log_lidar_every_num_steps
+                == 0
+            )
+            should_log_additional_metrics = (
+                self.training_state["global_step"] % self.conf.log_every_num_steps == 0
+            ) or should_log_lidar
+
+            # Forward-backward model
+
             start_time = time.time()
+
             batch, *_ = next(dataloader_stream)
-            log_dict = self.train_step(batch, start_time)
+            patches, token_ids = self.prepare_context_target_batch(batch)
+
+            log_dict = self.step_model(
+                patches, token_ids, log_smooth_rank=should_log_additional_metrics
+            )
+
+            elapsed = time.time() - start_time
+
+            token_ids = token_ids.cpu()
+
+            # Count the total number of samples in the batch
+            num_samples_in_batch = 0
+            for ids_seq in token_ids[..., 0]:
+                ids = torch.unique(ids_seq).tolist()
+                if MASK_SAMPLE_ID in ids:
+                    ids.remove(MASK_SAMPLE_ID)
+                num_samples_in_batch += len(ids)
+
+            log_dict["num_samples_in_batch"] = num_samples_in_batch
+
+            elapsed = time.time() - start_time
+            log_dict["step_time"] = elapsed
+            log_dict["samples_per_second"] = num_samples_in_batch / elapsed
+
+            # Compute the lidar score
+            if should_log_lidar:
+                log_dict["lidar_score"] = self.compute_lidar_score()
+
+            # Log some other metrics
+            if should_log_additional_metrics:
+                log_dict.update(self.compute_additional_metrics(token_ids))
+
+                # Post to wandb
+                wandb.log(
+                    log_dict,
+                    step=self.training_state["global_step"],
+                )
 
             # Write to log file
             self.write_log_row(log_dict)
@@ -425,6 +446,7 @@ class Trainer:
                 f"{training_state_str}loss:{round(log_dict['loss'], 3)}"
             )
 
+            # Estimate the current epoch based on the number of total samples processed
             estimated_epoch = (
                 self.training_state["num_total_samples"]
                 // self.conf.train_dataset_length

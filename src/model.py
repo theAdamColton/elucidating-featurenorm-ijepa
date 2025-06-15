@@ -610,11 +610,11 @@ class IJEPAConfig:
 
 
 class IJEPAOutput(NamedTuple):
-    loss: torch.Tensor
     smooth_rank: torch.Tensor | None = None
     tokenwise_loss: torch.Tensor | None = None
     predictor_target_token_ids: torch.Tensor | None = None
     diffmoe_loss: torch.Tensor | float = 0.0
+    is_target_mask: torch.Tensor | None = None
 
 
 class IJEPAModel(nn.Module):
@@ -635,8 +635,6 @@ class IJEPAModel(nn.Module):
             self.running_batchnorm = RunningBatchNorm(1)
 
         self.predictor = Predictor(config.predictor)
-
-        self.did_forward_once = False
 
     def forward(
         self,
@@ -668,15 +666,7 @@ class IJEPAModel(nn.Module):
 
         b, _, _ = patches.shape
 
-        with torch.inference_mode():
-            # TODO, Because we are in inference_mode,
-            # the diffmoe mlp will use the capacity predictor
-            # to allocate capacity.
-            # I think this is better than using the default
-            # capacity allocation; it should make the ema_encoder
-            # more robust to the extra long sequence length,
-            # which is never seen during training.
-            # self.ema_encoder.eval()
+        with torch.no_grad():
             target_hidden_states = self.ema_encoder(patches, token_ids).hidden_states
 
         y_token_ids = token_ids
@@ -870,9 +860,6 @@ class IJEPAModel(nn.Module):
         )
         prediction_mask[:, num_ctx_tokens:] = 1
 
-        if not self.did_forward_once:
-            print("predictor inputs:", x.shape)
-
         x, predictor_diffmoe_loss = self.predictor(
             x, combined_token_ids, prediction_mask=prediction_mask
         )
@@ -890,18 +877,14 @@ class IJEPAModel(nn.Module):
             target_register_ids = target_token_ids[:, :, 1]
             is_target_mask = is_target_mask & (target_register_ids == MASK_SAMPLE_ID)
 
-        mean_loss = loss[is_target_mask].mean()
-
         result = IJEPAOutput(
-            loss=mean_loss,
             smooth_rank=smooth_rank,
             diffmoe_loss=student_outputs.diffmoe_loss + predictor_diffmoe_loss,
             tokenwise_loss=loss if return_tokenwise_loss else None,
             predictor_target_token_ids=target_token_ids
             if return_predictor_target_token_ids
             else None,
+            is_target_mask=is_target_mask,
         )
-
-        self.did_forward_once = True
 
         return result
