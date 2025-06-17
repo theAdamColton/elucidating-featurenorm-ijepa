@@ -8,7 +8,6 @@ dependencies = [
     "accelerate>=1.6.0",
     "diffmoe",
     "einx>=0.3.0",
-    "flash-attn",
     "jsonargparse[signatures]>=4.38.0",
     "matplotlib>=3.10.1",
     "numpy>=2.2.5",
@@ -27,7 +26,5 @@ dev = [
     "bpython>=0.25",
 ]
 
-# This is hardcoded to cuda12.8 and torch 2.7 and python 3.12
 [tool.uv.sources]
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.1.0/flash_attn-2.7.4+cu128torch2.7-cp312-cp312-linux_x86_64.whl" }
-diffmoe = { git = "https://github.com/theAdamColton/diffmoe.git", rev = "18b17d8bbb1b840c0e56f0c4b14c07ea937fbcbd" }
+diffmoe = { git = "https://github.com/theAdamColton/diffmoe.git", rev = "faf2b49ff5ba8ea64292f712f443016a5692ff70" }

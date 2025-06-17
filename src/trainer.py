@@ -20,7 +20,7 @@ from src.model import IJEPAModel, IJEPAOutput
 from src.validate import validate
 from src.dataset import get_repeated_data
 from src.lidar import compute_lidar_score
-from src.ops import masked_mean_over_sequence_dim
+from src.ops import masked_mean_along_sequence_dim
 
 
 class Trainer:
@@ -47,8 +47,11 @@ class Trainer:
 
         self.log_file_path = self.checkpoint_folder_path / "training_log.jsonl"
 
+        self.student_encoder = self.model.encoder
         if conf.should_compile:
             self.model = torch.compile(self.model, fullgraph=True, dynamic=False)
+            # Is possibly run with dynamic shapes
+            self.student_encoder = torch.compile(self.student_encoder)
 
         self.lidar_data = None
 
@@ -136,14 +139,9 @@ class Trainer:
             yaml.dump(conf_dict, f)
 
     def compute_lidar_score(self):
-        # TODO we use eval mode, which causes
+        # we use eval mode, which causes
         # diffmoe to use dynamic allocation
-        self.model.eval()
-
-        if self.conf.should_compile:
-            encoder = torch.compile(self.model.encoder)
-        else:
-            encoder = self.model.encoder
+        self.student_encoder.eval()
 
         conf = self.conf
         if self.lidar_data is None:
@@ -185,7 +183,7 @@ class Trainer:
 
             with torch.inference_mode():
                 with self.autocast_fn():
-                    encoder_hidden_states = encoder(
+                    encoder_hidden_states = self.student_encoder(
                         x=patches, token_ids=token_ids
                     ).hidden_states
 
@@ -194,7 +192,7 @@ class Trainer:
 
             encoder_hidden_states = encoder_hidden_states.float()
             # b [s] d
-            encoder_hidden_states = masked_mean_over_sequence_dim(
+            encoder_hidden_states = masked_mean_along_sequence_dim(
                 encoder_hidden_states, is_sample_mask
             )
 
@@ -520,7 +518,9 @@ class Trainer:
     def train(self):
         conf_d = dataclasses.asdict(self.conf)
         trainable_params = (p for p in self.model.parameters() if p.requires_grad)
-        conf_d["num_params"] = sum(p.nelement() for p in trainable_params)
+        num_params = sum(p.nelement() for p in trainable_params)
+        print("NUM TRAINABLE PARAMETERS", num_params)
+        conf_d["num_params"] = num_params
 
         wandb.init(
             project="ijepa-tanh",

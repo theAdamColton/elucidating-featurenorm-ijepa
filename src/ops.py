@@ -1,17 +1,18 @@
 import torch
-import einx
 
 
-def masked_mean_over_sequence_dim(x, mask):
-    b, s, d = x.shape
+def masked_mean_along_sequence_dim(x, mask):
+    """
+    x: b s d
+    mask: b s
 
-    if not torch.compiler.is_compiling():
-        assert einx.matches("b s", mask, b=b, s=s)
+    equivalent to:
+    torch.stack([xi[mi].mean(0) for xi,mi in zip(x, mask)])
 
-    x = einx.multiply("b s d, b s", x, mask)
-    x = einx.sum("b [s] d", x)
-
-    num_masked = einx.sum("b [s]", mask)
-    num_masked.clip_(1)
-    x = einx.divide("b d, b", x, num_masked)
+    but outputs zeros instead of nans
+    """
+    denom = torch.sum(mask, -1, keepdim=True)
+    denom.clip_(1)
+    x = x * mask.unsqueeze(-1)
+    x = x.sum(1) / denom
     return x
