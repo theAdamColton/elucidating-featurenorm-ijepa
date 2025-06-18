@@ -5,13 +5,12 @@ description = "Elucidating the role of feature normalization in IJEPA"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "accelerate>=1.6.0",
     "diffmoe",
     "einx>=0.3.0",
     "jsonargparse[signatures]>=4.38.0",
     "matplotlib>=3.10.1",
     "numpy>=2.2.5",
-    "pillow-simd>=9.5.0.post2",
+    "pillow>=11.2.1",
     "tensorset==0.4.5",
     "torch>=2.7.0",
     "torch-pca>=1.1.0",

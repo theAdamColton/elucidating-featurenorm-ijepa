@@ -7,7 +7,7 @@ conf:
   dtype: bfloat16
   device: cuda
 
-  num_epochs: 350
+  num_epochs: 800
 
   ema_beta_start: 0.95
   ema_beta_warmup_steps: 1000
@@ -16,9 +16,9 @@ conf:
   ema_beta_end: 0.9995
 
   steady_lr: 5e-4
-  num_lr_steady_steps: 250000
-  num_lr_cooldown_steps: 50000
-  end_lr: 7e-5
+  num_lr_steady_steps: 800000
+  num_lr_cooldown_steps: 270000
+  end_lr: 1e-6
 
   batch_size: 256
   num_workers: 4
