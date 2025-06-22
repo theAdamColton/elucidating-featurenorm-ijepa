@@ -52,7 +52,13 @@ def main(conf: MainConfig = MainConfig()):
 
     grad_scaler = torch.GradScaler()
 
-    training_state = dict(global_step=0, epoch=0, num_total_samples=0)
+    trainer = Trainer(
+        model=model,
+        grad_scaler=grad_scaler,
+        optimizer=optimizer,
+        conf=conf,
+        dataloader=dataloader,
+    )
 
     @contextmanager
     def autocast_fn():
@@ -75,7 +81,7 @@ def main(conf: MainConfig = MainConfig()):
 
             model.load_state_dict(d["model"], strict=False)
             optimizer.load_state_dict(d["optimizer"])
-            training_state.update(d["training_state"])
+            trainer.load_state_dict(d["training_state"])
 
         _load()
 
@@ -162,14 +168,6 @@ def main(conf: MainConfig = MainConfig()):
         )
 
     elif conf.mode == "train":
-        trainer = Trainer(
-            model=model,
-            grad_scaler=grad_scaler,
-            optimizer=optimizer,
-            training_state=training_state,
-            conf=conf,
-            dataloader=dataloader,
-        )
         trainer.train()
 
 

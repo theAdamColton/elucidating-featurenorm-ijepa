@@ -89,8 +89,10 @@ class PairPacker:
                 )
                 buffer_value = self.pad_value_dict.get(column_name)
                 if buffer_value is None:
-                    raise ValueError(f"Can't initialize the buffer of {column_name} when it doesn't have a value in \
-                                     the pad_value_dict!")
+                    raise ValueError(
+                        f"Can't initialize the buffer of {column_name} when it doesn't have a value in \
+                                     the pad_value_dict!"
+                    )
                 buffer = torch.full(
                     buffer_shape, buffer_value, device=device, dtype=dtype
                 )

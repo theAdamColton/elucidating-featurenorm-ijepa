@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import yaml
-import dataclasses
+from dataclasses import dataclass, asdict, replace
 
 from tqdm import tqdm
 import torch
@@ -23,20 +23,25 @@ from src.lidar import compute_lidar_score
 from src.ops import masked_mean_along_sequence_dim
 
 
+@dataclass(repr=True)
+class TrainingState:
+    global_step: int = 0
+    epoch: int = 0
+    num_total_samples: int = 0
+
+
 class Trainer:
     def __init__(
         self,
         model: IJEPAModel,
         grad_scaler: torch.GradScaler,
         optimizer: torch.optim.Optimizer,
-        training_state: dict,
         conf: MainConfig,
         dataloader,
     ):
         self.model = model
         self.grad_scaler = grad_scaler
         self.conf = conf
-        self.training_state = training_state
         self.patch_size = conf.patch_size
 
         self.optimizer = optimizer
@@ -54,6 +59,13 @@ class Trainer:
             self.student_encoder = torch.compile(self.student_encoder)
 
         self.lidar_data = None
+        self.training_state = TrainingState()
+
+    def load_state_dict(self, state_dict):
+        self.training_state = replace(self.training_state, **state_dict)
+
+    def state_dict(self):
+        return asdict(self.training_state)
 
     def get_dataloader(self):
         conf = self.conf
@@ -101,24 +113,13 @@ class Trainer:
     def save_checkpoint(self):
         self.ensure_checkpoint_folder()
 
-        existing_checkpoints = list(self.checkpoint_folder_path.iterdir())
-        existing_checkpoints.sort()
-
-        checkpoints_to_delete = existing_checkpoints[
-            : -self.conf.max_num_save_checkpoints
-        ]
-
-        for existing_checkpoint in checkpoints_to_delete:
-            print("Deleting checkpoint", existing_checkpoint)
-            existing_checkpoint.unlink()
-
         checkpoint_save_path = (
-            self.checkpoint_folder_path / f"{self.training_state['epoch']:05}.pt"
+            self.checkpoint_folder_path / f"{self.training_state.epoch:05}.pt"
         )
 
         torch.save(
             {
-                "training_state": self.training_state,
+                "training_state": self.state_dict(),
                 "grad_scaler": self.grad_scaler.state_dict(),
                 "model": (
                     self.model._orig_mod.state_dict()
@@ -132,11 +133,23 @@ class Trainer:
         print("Saved checkpoint to ", checkpoint_save_path)
 
         yaml_save_path = self.checkpoint_folder_path / "config.yaml"
-        conf_dict = dataclasses.asdict(self.conf)
+        conf_dict = asdict(self.conf)
         # Hack to allow loading from jsonargparse
         conf_dict = dict(conf=conf_dict)
         with open(yaml_save_path, "w") as f:
             yaml.dump(conf_dict, f)
+
+        # Cleanup existing checkpoints
+        existing_checkpoints = list(self.checkpoint_folder_path.iterdir())
+        existing_checkpoints.sort()
+
+        checkpoints_to_delete = existing_checkpoints[
+            : -self.conf.max_num_save_checkpoints
+        ]
+
+        for existing_checkpoint in checkpoints_to_delete:
+            print("Deleting checkpoint", existing_checkpoint)
+            existing_checkpoint.unlink()
 
     def compute_lidar_score(self):
         # we use eval mode, which causes
@@ -217,7 +230,7 @@ class Trainer:
     @property
     def ema_beta(self):
         conf = self.conf
-        global_step = self.training_state["global_step"]
+        global_step = self.training_state.global_step
         if global_step <= conf.ema_beta_warmup_steps:
             scale = global_step / conf.ema_beta_warmup_steps
             beta = (
@@ -235,7 +248,7 @@ class Trainer:
     @property
     def lr(self):
         conf = self.conf
-        global_step = self.training_state["global_step"]
+        global_step = self.training_state.global_step
 
         if global_step <= conf.num_lr_warmup_steps:
             scale = global_step / conf.num_lr_warmup_steps
@@ -314,12 +327,13 @@ class Trainer:
 
         # Step ema model
         ema_beta = self.ema_beta
-        self.ema_update(ema_beta)
+        with torch.no_grad():
+            self.ema_update(ema_beta)
 
         log_dict = dict(
-            epoch=self.training_state["epoch"],
-            num_total_samples=self.training_state["num_total_samples"],
-            global_step=self.training_state["global_step"],
+            epoch=self.training_state.epoch,
+            num_total_samples=self.training_state.num_total_samples,
+            global_step=self.training_state.global_step,
             lr=lr,
             ema_beta=ema_beta,
         )
@@ -376,81 +390,82 @@ class Trainer:
 
         return log_dict
 
+    def train_one_step(self, dataloader_stream, prog_bar):
+        should_log_lidar = (
+            self.training_state.global_step % self.conf.log_lidar_every_num_steps == 0
+        )
+        should_log_additional_metrics = (
+            self.training_state.global_step % self.conf.log_every_num_steps == 0
+        ) or should_log_lidar
+
+        # Forward-backward model
+
+        start_time = time.time()
+
+        batch, *_ = next(dataloader_stream)
+        patches, token_ids = self.prepare_context_target_batch(batch)
+
+        log_dict = self.step_model(
+            patches, token_ids, log_smooth_rank=should_log_additional_metrics
+        )
+
+        elapsed = time.time() - start_time
+
+        token_ids = token_ids.cpu()
+
+        # Count the total number of samples in the batch
+        num_samples_in_batch = 0
+        for ids_seq in token_ids[..., 0]:
+            ids = torch.unique(ids_seq).tolist()
+            if MASK_SAMPLE_ID in ids:
+                ids.remove(MASK_SAMPLE_ID)
+            num_samples_in_batch += len(ids)
+
+        log_dict["num_samples_in_batch"] = num_samples_in_batch
+
+        elapsed = time.time() - start_time
+        log_dict["step_time"] = elapsed
+        log_dict["samples_per_second"] = num_samples_in_batch / elapsed
+
+        if should_log_lidar:
+            log_dict["lidar_score"] = self.compute_lidar_score()
+
+        # Log some other metrics
+        if should_log_additional_metrics:
+            log_dict.update(self.compute_additional_metrics(token_ids))
+
+            # Post to wandb
+            wandb.log(
+                log_dict,
+                step=self.training_state.global_step,
+            )
+
+        # Write to log file
+        self.write_log_row(log_dict)
+
+        # Update training state
+        self.training_state.global_step += 1
+        self.training_state.num_total_samples += log_dict["num_samples_in_batch"]
+
+        # Update progress bar
+        prog_bar.update(1)
+        training_state_str = "".join(
+            f"{k}:{v} " for k, v in asdict(self.training_state).items()
+        )
+        prog_bar.set_description(
+            f"{training_state_str}loss:{round(log_dict['loss'], 3)}"
+        )
+
     def train_one_epoch(self, dataloader_stream, prog_bar):
         while True:
-            should_log_lidar = (
-                self.training_state["global_step"] % self.conf.log_lidar_every_num_steps
-                == 0
-            )
-            should_log_additional_metrics = (
-                self.training_state["global_step"] % self.conf.log_every_num_steps == 0
-            ) or should_log_lidar
-
-            # Forward-backward model
-
-            start_time = time.time()
-
-            batch, *_ = next(dataloader_stream)
-            patches, token_ids = self.prepare_context_target_batch(batch)
-
-            log_dict = self.step_model(
-                patches, token_ids, log_smooth_rank=should_log_additional_metrics
-            )
-
-            elapsed = time.time() - start_time
-
-            token_ids = token_ids.cpu()
-
-            # Count the total number of samples in the batch
-            num_samples_in_batch = 0
-            for ids_seq in token_ids[..., 0]:
-                ids = torch.unique(ids_seq).tolist()
-                if MASK_SAMPLE_ID in ids:
-                    ids.remove(MASK_SAMPLE_ID)
-                num_samples_in_batch += len(ids)
-
-            log_dict["num_samples_in_batch"] = num_samples_in_batch
-
-            elapsed = time.time() - start_time
-            log_dict["step_time"] = elapsed
-            log_dict["samples_per_second"] = num_samples_in_batch / elapsed
-
-            # Compute the lidar score
-            if should_log_lidar:
-                log_dict["lidar_score"] = self.compute_lidar_score()
-
-            # Log some other metrics
-            if should_log_additional_metrics:
-                log_dict.update(self.compute_additional_metrics(token_ids))
-
-                # Post to wandb
-                wandb.log(
-                    log_dict,
-                    step=self.training_state["global_step"],
-                )
-
-            # Write to log file
-            self.write_log_row(log_dict)
-
-            # Update training state
-            self.training_state["global_step"] += 1
-            self.training_state["num_total_samples"] += log_dict["num_samples_in_batch"]
-
-            prog_bar.update(1)
-            training_state_str = "".join(
-                f"{k}:{v} " for k, v in self.training_state.items()
-            )
-            prog_bar.set_description(
-                f"{training_state_str}loss:{round(log_dict['loss'], 3)}"
-            )
+            self.train_one_step(dataloader_stream, prog_bar)
 
             # Estimate the current epoch based on the number of total samples processed
             estimated_epoch = (
-                self.training_state["num_total_samples"]
-                // self.conf.train_dataset_length
+                self.training_state.num_total_samples // self.conf.train_dataset_length
             )
 
-            if estimated_epoch > self.training_state["epoch"]:
+            if estimated_epoch > self.training_state.epoch:
                 return
 
             if self.conf.test_mode:
@@ -488,7 +503,7 @@ class Trainer:
         best_accuracy = max(accuracies)
 
         log_dict = {
-            "epoch": self.training_state["epoch"],
+            "epoch": self.training_state.epoch,
             "acc@1": best_accuracy,
         }
 
@@ -500,7 +515,7 @@ class Trainer:
         line_series = wandb.plot.line_series(
             xs=depths,
             ys=[accuracies],
-            keys=[f"Epoch {self.training_state['epoch']:03}"],
+            keys=[f"Epoch {self.training_state.epoch:03}"],
             title="Feature Depth VS Accuracy@1",
             xname="Depth",
         )
@@ -509,14 +524,14 @@ class Trainer:
 
         wandb.log(
             log_dict,
-            step=self.training_state["global_step"],
+            step=self.training_state.global_step,
         )
 
-        print("EPOCH", self.training_state["epoch"], "accuracies", accuracies)
+        print("EPOCH", self.training_state.epoch, "accuracies", accuracies)
         return accuracies
 
     def train(self):
-        conf_d = dataclasses.asdict(self.conf)
+        conf_d = asdict(self.conf)
         trainable_params = (p for p in self.model.parameters() if p.requires_grad)
         num_params = sum(p.nelement() for p in trainable_params)
         print("NUM TRAINABLE PARAMETERS", num_params)
@@ -530,42 +545,24 @@ class Trainer:
 
         prog_bar = tqdm(desc="training")
 
-        dataloader_stream = None
+        dataloader_stream = iter(self.get_dataloader())
 
         while True:
-            if dataloader_stream is None:
-                dataloader_stream = iter(self.get_dataloader())
-
             self.train_one_epoch(dataloader_stream, prog_bar)
-            self.training_state["epoch"] += 1
+            self.training_state.epoch += 1
 
-            is_last_epoch = self.training_state["epoch"] == self.conf.num_epochs
+            is_last_epoch = self.training_state.epoch == self.conf.num_epochs
             should_validate = (
                 self.conf.test_mode
                 or is_last_epoch
                 or (
-                    (self.training_state["epoch"] > 0)
+                    (self.training_state.epoch > 0)
                     and (
-                        self.training_state["epoch"]
-                        % self.conf.validate_every_num_epochs
+                        self.training_state.epoch % self.conf.validate_every_num_epochs
                         == 0
                     )
                 )
             )
-
-            # TODO
-            # This is a hack to avoid memory usage creeping up
-            # from dataloader workers never closing tar files
-            should_gc = (
-                should_validate
-                or (self.training_state["epoch"] % self.conf.gc_every_num_epochs) == 0
-            )
-            if should_gc:
-                # My most vile and perverted HACK
-                del dataloader_stream
-                time.sleep(1)
-                gc.collect()
-                dataloader_stream = None
 
             if should_validate:
                 self.run_validation()

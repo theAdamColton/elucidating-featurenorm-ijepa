@@ -33,7 +33,7 @@ class MainConfig:
 
     log_every_num_steps: int = 50
 
-    log_lidar_every_num_steps: int = 1000
+    log_lidar_every_num_steps: int = 10000
     lidar_num_unique_samples: int = 1000
     lidar_num_augmentations: int = 50
 
@@ -59,7 +59,6 @@ class MainConfig:
     resume_checkpoint_path: str | None = None
 
     test_mode: bool = False
-    gc_every_num_epochs: int = 10
 
     num_image_channels: int = 3
 
