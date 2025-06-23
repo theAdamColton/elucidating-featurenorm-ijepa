@@ -144,7 +144,7 @@ class Trainer:
         existing_checkpoints.sort()
 
         checkpoints_to_delete = existing_checkpoints[
-            : -self.conf.max_num_save_checkpoints
+            : -(self.conf.max_num_save_checkpoints + 1)
         ]
 
         for existing_checkpoint in checkpoints_to_delete:
