@@ -159,7 +159,10 @@ def visualize_embeddings(
 
     b, s, d = patches.shape
 
+    # Run in eval mode - This causes the DiffMoEMLP to use dynamic (learned) expert allocation
     model.eval()
+
+    # Encode and visualize all patches (context+target)
 
     with autocast_fn():
         with torch.inference_mode():

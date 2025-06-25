@@ -44,17 +44,24 @@ def plot_sample_losses(
     autocast_fn,
     batch_size: int = 32,
     num_unique_samples: int = 10,
-    num_repeat_samples: int = 20,
+    num_repeat_samples: int = 2,
     seed: int | None = None,
 ):
     """
     Plot the distribution of losses for each sample in a batch.
+
+    This randomly resizes each image only ONCE,
+    and then applies `num_repeat_samples` random context-target masking,
+    to obtain repeated data of shape (`num_unique_samples`, `num_repeat_samples`, ...)
+
+    We record the loss over all repeated images, saving the loss into a image
     """
     context_sequence_length = context_target_dataset.packer_context_sequence_length
     window_size = context_target_dataset.mask_window_size
 
     model.eval()
 
+    # Data is (n q ...), where n is the number of unique samples and q is the number of repeats
     data: ts.TensorSet = get_repeated_data(
         config=context_target_dataset,
         seed=seed,
@@ -82,12 +89,13 @@ def plot_sample_losses(
 
     sample_mean_losses = {k.item(): 0 for k in unique_ids}
     sample_losses_variance = {k.item(): 0 for k in unique_ids}
+    _sample_counts = {k.item(): 0 for k in unique_ids}
 
     # Initialize sample loss images
     loss_images = dict()
     loss_counts = dict()
     for i, id in enumerate(unique_ids):
-        mask = element_sample_ids[i] == id
+        sample_target_mask = element_sample_ids[i] == id
         # get the max height and width over all augmentations
         aug_positions = all_token_ids[i, ..., -2:]
         # q s 2 -> 2
@@ -96,6 +104,8 @@ def plot_sample_losses(
         loss_count = torch.zeros(height, width)
         loss_images[id.item()] = loss_image
         loss_counts[id.item()] = loss_count
+
+    # Ungroup the data and encode it in batches
 
     def _ungroup(x):
         return einx.rearrange("n q s ... -> (n q) s ...", x)
@@ -124,9 +134,12 @@ def plot_sample_losses(
         # tokenwise loss is the batch repeated loss
         # from the predictor
         tokenwise_loss = result.tokenwise_loss.cpu().float()
-        # target sample_ids is batch repeated sequence ids fed to the predictor
+        # target sample_ids is batch repeated token ids fed to the predictor
         target_token_ids = result.predictor_target_token_ids.cpu()
+        # Mask where (True) indicates tokens to take loss on
+        is_target_mask = result.is_target_mask.cpu()
 
+        # Ungroup result tensors
         tokenwise_loss = einx.rearrange(
             "(r b) ys d -> r b ys d",
             tokenwise_loss,
@@ -137,56 +150,72 @@ def plot_sample_losses(
             target_token_ids,
             r=model.config.predictor_batch_repeat,
         )
+        is_target_mask = einx.rearrange(
+            "(r b) ys -> r b ys",
+            is_target_mask,
+            r=model.config.predictor_batch_repeat,
+        )
 
+        overall_loss = tokenwise_loss[is_target_mask].mean()
         tokenwise_loss = einx.mean("r b ys [d]", tokenwise_loss)
 
+        predictor_batch_repeat = model.config.predictor_batch_repeat
+        assert predictor_batch_repeat == target_token_ids.shape[0]
         b = target_token_ids.shape[1]
 
         # Compute the mean loss for each unique sample across the batch
         for i in range(model.config.predictor_batch_repeat):
             for j in range(b):
-                pred_ids = target_token_ids[i, j, :, 0]
-                pred_ids = torch.unique(pred_ids).tolist()
-                if MASK_SAMPLE_ID in pred_ids:
-                    pred_ids.remove(MASK_SAMPLE_ID)
-                id = pred_ids[0]
-                assert len(pred_ids) == 1
+                # This ith,jth sequence contains the
+                # predictors predictions from a single sample, and also possibly includes some padding
+                pred_sample_ids = target_token_ids[i, j, :, 0]
+                pred_sample_ids = torch.unique(pred_sample_ids).tolist()
+                if MASK_SAMPLE_ID in pred_sample_ids:
+                    pred_sample_ids.remove(MASK_SAMPLE_ID)
+                id = pred_sample_ids[0]
+                assert len(pred_sample_ids) == 1, (
+                    f"Each batch element should contain 1 sample, not {len(pred_sample_ids)}!"
+                )
 
-                assert id != MASK_SAMPLE_ID
-                mask = target_token_ids[i, j, :, 0] == id
-                assert mask.sum() > 0
+                sample_target_mask = is_target_mask[i, j, :]
+                assert sample_target_mask.sum() > 0
 
-                position_ids = target_token_ids[i, j, :, -2:]
-                position_ids = position_ids[mask]
+                sample_position_ids = target_token_ids[i, j, :, -2:]
+                sample_position_ids = sample_position_ids[sample_target_mask]
 
-                losses = tokenwise_loss[i, j][mask]
+                sample_losses = tokenwise_loss[i, j][sample_target_mask]
 
                 # Update the loss image
                 loss_image = loss_images[id]
                 loss_count = loss_counts[id]
-                for (hid, wid), loss in zip(position_ids, losses):
+                for (hid, wid), loss in zip(sample_position_ids, sample_losses):
                     loss_image[hid, wid] += loss
 
                     loss_count[hid, wid] += 1
 
                 # Measure the mean sample loss, and the variance of the sample loss
-                sample_loss = losses.mean()
-                sample_loss_variance = losses.var()
+                sample_loss = sample_losses.mean()
+                sample_loss_variance = sample_losses.var()
 
                 # Take the mean of sample losses across iterations
-                sample_mean_losses[id] += sample_loss / num_repeat_samples
-                sample_losses_variance[id] += sample_loss_variance / num_repeat_samples
+                sample_mean_losses[id] += sample_loss / (
+                    num_repeat_samples * predictor_batch_repeat
+                )
+                sample_losses_variance[id] += sample_loss_variance / (
+                    num_repeat_samples * predictor_batch_repeat
+                )
+                _sample_counts[id] += 1
 
     # Save an image for each sample
     output_path = get_viz_output_path()
 
     for i in range(num_unique_samples):
         id = unique_ids[i].item()
-        mask = first_token_ids[i, :, 0] == id
-        if not mask.any():
+        sample_target_mask = first_token_ids[i, :, 0] == id
+        if not sample_target_mask.any():
             continue
-        sample_patches = first_patches[i, mask]
-        element_sample_ids = first_token_ids[i, mask]
+        sample_patches = first_patches[i, sample_target_mask]
+        element_sample_ids = first_token_ids[i, sample_target_mask]
 
         d = sample_patches.shape[-1]
 
@@ -205,7 +234,7 @@ def plot_sample_losses(
             c=num_image_channels,
         )
 
-        # convert to [0,1] float
+        # convert from uint8 to [0,1] float
         image = image / 255
 
         sample_loss = sample_mean_losses[id].item()
