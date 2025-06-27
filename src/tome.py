@@ -1,4 +1,4 @@
-from typing import Optional
+from collections import namedtuple
 import einx
 import torch
 
@@ -47,198 +47,164 @@ def unmerge_all(x: torch.Tensor, adm: torch.Tensor) -> torch.Tensor:
     return x.gather(dim=1, index=expand_trailing(unmerge_indices, x))
 
 
-class TokenMerger:
+def merge(
+    x: torch.Tensor,
+    unm_idx: torch.Tensor,
+    src_idx: torch.Tensor,
+    dst_idx: torch.Tensor,
+    mode: str = "mean",
+) -> torch.Tensor:
+    """
+    x shape: (batch, sequence length, ...)
+
+    Does bipartite merging as keyed by unm_idx and src_idx and dst_idx
+    """
+
+    a, b = x[:, ::2], x[:, 1::2]
+    unm = a.gather(dim=1, index=expand_trailing(unm_idx, a))
+    a = a.gather(dim=1, index=expand_trailing(src_idx, a))
+
+    og_dtype = b.dtype
+    b = b.float()
+    a = a.float()
+
+    # step 4.) Merge connected tokens
+
+    if mode == "mlerp":
+        b = b.scatter_reduce(
+            dim=1, index=expand_trailing(dst_idx, b), src=a, reduce="mean"
+        )
+        b_norm = b.norm(p=2, dim=-1)
+        n = b_norm.scatter_reduce(
+            dim=1,
+            index=dst_idx,
+            src=a.norm(p=2, dim=-1),
+            reduce="amax",
+        )
+        b = (b / b_norm.unsqueeze(-1)) * n.unsqueeze(-1)
+    elif mode == "drop":
+        pass
+    else:
+        b = b.scatter_reduce(
+            dim=1,
+            index=expand_trailing(dst_idx, b),
+            src=a,
+            reduce=mode,
+        )
+
+    b = b.to(og_dtype)
+
+    # step 5.) Concatenate sets back together
+    return torch.cat((unm, b), 1)
+
+
+TomeBuffers = namedtuple(
+    "TokenMergerBuffers", ["adm", "unm_idx", "src_idx", "dst_idx", "merged_ids"]
+)
+
+
+def create_token_merger(
+    k: torch.Tensor, r: int, adm=None, sample_ids=None, mask_id=-100
+) -> TomeBuffers:
     """
     Merges and merges tokens, exploiting the token to token similarity in k.
 
-    One TokenMerger instance represents a single merge layer, with a fixed input and
-    output sequence length.
-
-    Example using a single TokenMerger layer:
+    Example of merging a single layer:
         >>> batch_size = 32
         >>> sequence_length = 128
         >>> hidden_size = 768
         >>> r = 32
         >>> keys = torch.randn(batch_size, sequence_length, hidden_size)
-        >>> tm = TokenMerger(keys, r)
+        >>> tm_buffers = create_token_merger(keys, r)
         >>> x = torch.randn(batch_size, sequence_length, 64)
-        >>> merged_x = tm(x) # shape: batch_size, sequence_length - r, 64
-        >>> unmerged_x = tm.unmerge(merged_x) # shape: batch_size, sequence_length, 64
+        >>> merged_x = merge(x, tm_buffers.unm_idx, tm_buffers.src_idx, tm_buffers.dst_idx, mode="mean") # shape: batch_size, sequence_length - r, 64
+        >>> unmerged_x = unmerge_all(merged_x, tm_buffers.adm) # shape: batch_size, sequence_length, 64
 
-    If you want to apply TokenMerger over multiple layers and you want to unmerge the
-    final tokens into the shape of the original tokens, you will need to pass the TokenMerger.adm
+    If you want to merge tokens over multiple layers and you want to unmerge the
+    final tokens into the shape of the original tokens, you will need to pass the adm
     from layer to layer.
 
     This looks like this:
         >>> x = torch.randn(1, 16, 2)
-        >>> tm1 = TokenMerger(x, 4)
-        >>> x_merged1 = tm1(x) # shape: (1, 12, 2)
-        >>> tm2 = TokenMerger(x_merged1, 4, adm=tm1.adm) # pass adm to tm2
-        >>> x_merged2 = tm2(x_merged1) # shape: (1, 8, 2)
-        >>> rec_x = tm2.unmerge(x_merged2) # shape: (1, 16, 2)
+        >>> tm_buffers = create_token_merger(x, 4)
+        >>> x_merged1 = merge(x) # shape: (1, 12, 2)
+        >>> x_merged1 = merge(x, tm_buffers.unm_idx, tm_buffers.src_idx, tm_buffers.dst_idx) # shape: (1, 12, 2)
+        >>> tm_buffers = create_token_merger(x_merged1, 4, adm=tm1.adm) # pass adm to tm2
+        >>> x_merged2 = merge(x_merged1, tm_buffers.unm_idx, tm_buffers.src_idx, tm_buffers.dst_idx) # shape: (1, 8, 2)
+        >>> rec_x = unmerge_all(x_merged2, tm_buffers.adm) # shape: (1, 16, 2)
 
-    TokenMerger also accepts sample_ids and mask_id as optional parameters.
+    This contructor also accepts sample_ids and mask_id as optional parameters.
     These parameters are meant for specifying the distinct datapoints when using sequence packing.
     Each sequence in the batch can contain more than one datapoint. There might also be padding.
     Per sequence, each datapoint is identified using a unique integer id.
     For example, sample_ids[0] could equal [0, 0, 0, 1, 1,  -100]. sample_ids[0] has 2
     datapoints, identified by 0 and 1. Datapoint 0 has 3 tokens, datapoint 1 has 2 tokens. There
     is also one padding token.
-    TokenMerger will not merge tokens from different datapoints. Datapoint 0 and datapoint 1 will
-    never be merged. TokenMerger will merge padding tokens only with other padding tokens.
+    Tokens will not be merged if they are from different samples.
+    never be merged. Padding tokens only get merged with other padding tokens.
     """
+    sequence_length = k.shape[1]
+    assert sequence_length // 2 >= r
+    assert r > 0
+    if adm is not None:
+        assert k.shape[0] == adm.shape[0]
+        assert k.shape[1] == adm.shape[1]
 
-    @torch.no_grad()
-    def __init__(
-        self, k: torch.Tensor, r: int, adm=None, sample_ids=None, mask_id=-100
-    ):
-        """
-        k: token embeddings, can be the key values from attention.
-            shape: batch, sequence length, z
+    # step 0.) (optional) normalize k
+    k = k / k.norm(dim=-1, keepdim=True)
 
-        r: the number of tokens to remove from the sequence length.
+    # step 1.) Assign tokens to set A or set B
+    a, b = k[:, ::2], k[:, 1::2]
 
-        adm: Optional torch bool tensor of shape (b, sequence length, original sequence length)
-            Pass this value if needing to unmerge multiple merge steps all at once.
-            This is a adjacency matrix, where the rows (dim=-2) represent the merged tokens,
-            and each column (dim=-1) represents the original tokens. For example, if
-            the zeroeth row contains [False, False, False, True, True], it means that
-            token 0, before being merged by this TokenMerger, is composed of the
-            tokens 3 and 4 (counting from zero).
+    # step 2.) Draw one edge between each token in set A and the most similar token in set B
+    scores = einx.dot("b s1 z, b s2 z -> b s1 s2", a, b)
 
-        sample_ids: LongTensor of shape (b, sequence_length)
-            Uniquely identifies each element of each sequence.
-            Protects tokens that are not part of the same instance from being merged.
-            Optional
-            shape: batch, sequence length
+    # masks out scores
+    if sample_ids is not None:
+        a_ids, b_ids = sample_ids[:, ::2], sample_ids[:, 1::2]
+        attention_mask = a_ids.unsqueeze(2) == b_ids.unsqueeze(1)
+        # scores where ids are not equal should be -inf
+        scores.masked_fill_(~attention_mask, torch.finfo(scores.dtype).min)
+        pad_mask = (a_ids == mask_id).unsqueeze(2) & (b_ids == mask_id).unsqueeze(1)
+        # makes pad tokens have high scores
+        scores.masked_fill_(pad_mask, torch.finfo(scores.dtype).max)
 
-        mask_id: integer id of the sequence id that is considered a part of the sequence padding.
-        """
-        sequence_length = k.shape[1]
-        assert sequence_length // 2 >= r
-        assert r > 0
-        if adm is not None:
-            assert k.shape[0] == adm.shape[0]
-            assert k.shape[1] == adm.shape[1]
+    node_max, node_idx = einx.max("b s1 s2 -> b s1", scores)
 
-        # step 0.) (optional) normalize k
-        k = k / k.norm(dim=-1, keepdim=True)
+    # step 3.) Keep the top r most similar edges
+    edge_idx = node_max.argsort(dim=-1, descending=True)  # shape: b s
+    unm_idx = edge_idx[:, r:]  # Unmerged Tokens
+    src_idx = edge_idx[:, :r]  # Merged Tokens
+    dst_idx = node_idx.gather(dim=1, index=src_idx)  # shape: b r
 
-        # step 1.) Assign tokens to set A or set B
-        a, b = k[:, ::2], k[:, 1::2]
+    if sample_ids is not None:
+        # Merges ids, but doesn't do any reduction on merged ids,
+        # Simply takes the items from set b.
+        # The reduction is uncessary because each set of merged ids is assumed to be identical,
+        # meaning that ids are not merged with ids that are different.
+        # An id 0 shouldn't be be merged with any id that is not 0.
+        unm_ids = a_ids.gather(dim=1, index=unm_idx)
+        a_ids = a_ids.gather(dim=1, index=src_idx)
 
-        # step 2.) Draw one edge between each token in set A and the most similar token in set B
-        scores = einx.dot("b s1 z, b s2 z -> b s1 s2", a, b)
-
-        # masks out scores
-        if sample_ids is not None:
-            a_ids, b_ids = sample_ids[:, ::2], sample_ids[:, 1::2]
-            attention_mask = a_ids.unsqueeze(2) == b_ids.unsqueeze(1)
-            # scores where ids are not equal should be -inf
-            scores.masked_fill_(~attention_mask, torch.finfo(scores.dtype).min)
-            pad_mask = (a_ids == mask_id).unsqueeze(2) & (b_ids == mask_id).unsqueeze(1)
-            # makes pad tokens have high scores
-            scores.masked_fill_(pad_mask, torch.finfo(scores.dtype).max)
-
-        node_max, node_idx = einx.max("b s1 s2 -> b s1", scores)
-
-        # step 3.) Keep the top r most similar edges
-        edge_idx = node_max.argsort(dim=-1, descending=True)  # shape: b s
-        unm_idx = edge_idx[:, r:]  # Unmerged Tokens
-        src_idx = edge_idx[:, :r]  # Merged Tokens
-        dst_idx = node_idx.gather(dim=1, index=src_idx)  # shape: b r
-        self.unm_idx = unm_idx
-        self.src_idx = src_idx
-        self.dst_idx = dst_idx
-        self.unmerged_sequence_length = k.shape[1]
-        self.merged_sequence_length = unm_idx.size(1) + b.size(1)
-        self.r = r
-        self.mask_id = mask_id
-
-        if sample_ids is not None:
-            # Merges ids, but doesn't do any reduction on merged ids,
-            # Simply takes the items from set b.
-            # The reduction is uncessary because each set of merged ids is assumed to be identical,
-            # meaning that ids are not merged with ids that are different.
-            # An id 0 shouldn't be be merged with any id that is not 0.
-            unm_ids = a_ids.gather(dim=1, index=unm_idx)
-            a_ids = a_ids.gather(dim=1, index=src_idx)
+        if not torch.compiler.is_compiling():
             assert torch.equal(
                 b_ids,
                 b_ids.scatter(dim=1, index=dst_idx, src=a_ids),
             ), (
                 "These ids should be equal. If this test fails it means that attention mask was not properly computed and or tokens were incorrectly merged over sequence-id boundaries."
             )
-            self.merged_ids = torch.cat((unm_ids, b_ids), 1)
-        else:
-            self.merged_ids = None
 
-        if adm is None:
-            adm = torch.eye(sequence_length, device=k.device)
-            adm = einx.rearrange("s1 s2 -> b s1 s2", adm, b=k.size(0))
-        else:
-            assert adm.size(0) == k.size(0)
-            assert adm.size(1) == sequence_length
-        self.adm = self.merge(adm, "amax")
+        merged_ids = torch.cat((unm_ids, b_ids), 1)
+    else:
+        merged_ids = None
 
-    def __call__(self, x: torch.Tensor, mode: str = "mean") -> torch.Tensor:
-        return self.merge(x, mode)
+    if adm is None:
+        adm = torch.eye(sequence_length, device=k.device)
+        adm = einx.rearrange("s1 s2 -> b s1 s2", adm, b=k.size(0))
+    else:
+        assert adm.size(0) == k.size(0)
+        assert adm.size(1) == sequence_length
 
-    def chain(self, k: torch.Tensor, r: Optional[int] = None):
-        prev = self
-        next = TokenMerger(
-            k, prev.r if r is None else r, prev.adm, prev.merged_ids, prev.mask_id
-        )
-        return next
+    adm = merge(adm, unm_idx, src_idx, dst_idx, mode="amax")
 
-    def merge(self, x: torch.Tensor, mode: str = "mean") -> torch.Tensor:
-        """
-        x shape: (batch, sequence length, ...)
-
-        Does bipartite merging as keyed by unm_idx and src_idx
-        """
-
-        assert x.size(1) == self.unmerged_sequence_length
-
-        a, b = x[:, ::2], x[:, 1::2]
-        unm = a.gather(dim=1, index=expand_trailing(self.unm_idx, a))
-        a = a.gather(dim=1, index=expand_trailing(self.src_idx, a))
-
-        og_dtype = b.dtype
-        b = b.float()
-        a = a.float()
-
-        # step 4.) Merge connected tokens
-
-        if mode == "mlerp":
-            b = b.scatter_reduce(
-                dim=1, index=expand_trailing(self.dst_idx, b), src=a, reduce="mean"
-            )
-            b_norm = b.norm(p=2, dim=-1)
-            n = b_norm.scatter_reduce(
-                dim=1,
-                index=self.dst_idx,
-                src=a.norm(p=2, dim=-1),
-                reduce="amax",
-            )
-            b = (b / b_norm.unsqueeze(-1)) * n.unsqueeze(-1)
-        elif mode == "drop":
-            pass
-        else:
-            b = b.scatter_reduce(
-                dim=1,
-                index=expand_trailing(self.dst_idx, b),
-                src=a,
-                reduce=mode,
-            )
-
-        b = b.to(og_dtype)
-
-        # step 5.) Concatenate sets back together
-        return torch.cat((unm, b), 1)
-
-    def unmerge_all(self, x: torch.Tensor) -> torch.Tensor:
-        return unmerge_all(x, self.adm)
-
-    def merge_all(self, x):
-        return merge_all(x, self.adm)
+    return TomeBuffers(adm, unm_idx, src_idx, dst_idx, merged_ids)

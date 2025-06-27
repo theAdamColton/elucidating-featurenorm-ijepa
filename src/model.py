@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import einx
 from dataclasses import dataclass, field
 
-from src.tome import TokenMerger
+from src import tome
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig, DynTanh
 from src.dataset import MASK_SAMPLE_ID
 
@@ -323,7 +323,7 @@ class Encoder(nn.Module):
         diffmoe_loss = 0.0
 
         if should_tome_merge:
-            token_merger = None
+            token_merger_buffers = None
 
         for i, block in enumerate(self.blocks):
             x, keys, *diffmoe_outputs = block(
@@ -358,19 +358,38 @@ class Encoder(nn.Module):
 
                 keys = einx.mean("b [h] s d", keys)
 
-                if token_merger is None:
-                    token_merger = TokenMerger(
+                if token_merger_buffers is None:
+                    token_merger_buffers = tome.create_token_merger(
                         keys,
-                        num_to_merge,
+                        r=num_to_merge,
+                        adm=None,
                         sample_ids=sample_ids,
                         mask_id=MASK_SAMPLE_ID,
                     )
                 else:
-                    token_merger = token_merger.chain(keys, num_to_merge)
+                    token_merger_buffers = tome.create_token_merger(
+                        keys,
+                        r=num_to_merge,
+                        adm=token_merger_buffers.adm,
+                        sample_ids=sample_ids,
+                        mask_id=MASK_SAMPLE_ID,
+                    )
 
                 # merge position ids and compute new attention mask
-                position_ids = token_merger.merge(position_ids, mode="mean")
-                sample_ids = token_merger.merge(sample_ids, mode="drop")
+                position_ids = tome.merge(
+                    position_ids,
+                    token_merger_buffers.unm_idx,
+                    token_merger_buffers.src_idx,
+                    token_merger_buffers.dst_idx,
+                    mode="mean",
+                )
+                sample_ids = tome.merge(
+                    sample_ids,
+                    token_merger_buffers.unm_idx,
+                    token_merger_buffers.src_idx,
+                    token_merger_buffers.dst_idx,
+                    mode="mean",
+                )
                 attn_mask = get_attn_mask(
                     sample_ids,
                     num_heads=config.block_config.attention_config.num_attention_heads,
@@ -382,7 +401,13 @@ class Encoder(nn.Module):
                     rotary_embeds = self.rope_pos_emb(position_ids)
 
                 # Merge the hidden states
-                x = token_merger.merge(x, mode="mean")
+                x = tome.merge(
+                    x,
+                    token_merger_buffers.unm_idx,
+                    token_merger_buffers.src_idx,
+                    token_merger_buffers.dst_idx,
+                    mode="mean",
+                )
 
             if should_track_diffmoe_loss:
                 if len(diffmoe_outputs) == 0:
@@ -394,7 +419,9 @@ class Encoder(nn.Module):
             if return_all_layer_features:
                 layer_features = x
                 if should_tome_merge:
-                    layer_features = token_merger.unmerge_all(layer_features)
+                    layer_features = tome.unmerge_all(
+                        layer_features, token_merger_buffers.adm
+                    )
 
                 all_layer_features[i + 1] = layer_features
 
@@ -407,7 +434,7 @@ class Encoder(nn.Module):
 
         if should_tome_merge:
             # Unmerge normalized outputs
-            x = token_merger.unmerge_all(x)
+            x = tome.unmerge_all(x, token_merger_buffers.adm)
 
         result = EncoderOutput(
             hidden_states=x,
