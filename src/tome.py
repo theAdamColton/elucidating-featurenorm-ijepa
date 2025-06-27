@@ -27,9 +27,9 @@ def merge_all(x: torch.Tensor, adm: torch.Tensor) -> torch.Tensor:
     using tm.merge() however many times merging was applied.
     """
     b, s, *_ = x.shape
-    assert s == adm.size(
-        -1
-    ), "x needs to have the same sequence length as the original input"
+    assert s == adm.size(-1), (
+        "x needs to have the same sequence length as the original input"
+    )
     normalized_adm = adm / adm.sum(-1, keepdim=True)
     return einx.dot("b s2 s1, b s1 ... -> b s2 ...", normalized_adm, x)
 
@@ -117,6 +117,9 @@ class TokenMerger:
         sequence_length = k.shape[1]
         assert sequence_length // 2 >= r
         assert r > 0
+        if adm is not None:
+            assert k.shape[0] == adm.shape[0]
+            assert k.shape[1] == adm.shape[1]
 
         # step 0.) (optional) normalize k
         k = k / k.norm(dim=-1, keepdim=True)
@@ -163,7 +166,9 @@ class TokenMerger:
             assert torch.equal(
                 b_ids,
                 b_ids.scatter(dim=1, index=dst_idx, src=a_ids),
-            ), "These ids should be equal. If this test fails it means that attention mask was not properly computed and or tokens were incorrectly merged over sequence-id boundaries."
+            ), (
+                "These ids should be equal. If this test fails it means that attention mask was not properly computed and or tokens were incorrectly merged over sequence-id boundaries."
+            )
             self.merged_ids = torch.cat((unm_ids, b_ids), 1)
         else:
             self.merged_ids = None

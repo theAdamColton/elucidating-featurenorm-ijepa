@@ -215,15 +215,14 @@ class TransformerBlock(nn.Module):
     ):
         norm_x = self.norm1(x)
 
-        x = (
-            x
-            + self.attention(
-                norm_x,
-                block_mask=attn_block_mask,
-                attn_mask=attn_mask,
-                rotary_embeds=rotary_embeds,
-            )[0]
+        attn_outputs, keys = self.attention(
+            self.norm1(x),
+            block_mask=attn_block_mask,
+            attn_mask=attn_mask,
+            rotary_embeds=rotary_embeds,
         )
+
+        x = x + attn_outputs
 
         if self.config.mlp_mode == "vanilla":
             x = x + self.mlp(self.norm2(x))
@@ -245,4 +244,4 @@ class TransformerBlock(nn.Module):
         else:
             raise ValueError(self.config.norm_mode)
 
-        return x, *diffmoe_outputs
+        return x, keys, *diffmoe_outputs

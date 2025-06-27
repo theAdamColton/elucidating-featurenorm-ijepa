@@ -54,6 +54,12 @@ class TestMain(unittest.TestCase):
         conf.model.encoder.block_config.mlp_mode = "diffmoe"
         main(conf)
 
+    def test_train_mode_tome(self):
+        conf = self.get_mini_conf()
+        conf.mode = "train"
+        conf.model.encoder.tome_layerwise_merge_rate = 0.05
+        main(conf)
+
     def test_validate_mode(self):
         conf = self.get_mini_conf()
         conf.mode = "validate"

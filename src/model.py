@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import einx
 from dataclasses import dataclass, field
 
+from src.tome import TokenMerger
 from src.transformer_blocks import TransformerBlock, TransformerBlockConfig, DynTanh
 from src.dataset import MASK_SAMPLE_ID
 
@@ -191,6 +192,16 @@ class EncoderConfig:
     )
     norm_elementwise_affine: bool = True
 
+    tome_layerwise_merge_rate: float | None = None
+    tome_merge_to_nearest_mult_of: int | None = 16
+
+    def __post_init__(self):
+        if self.tome_layerwise_merge_rate is not None:
+            total_merge_rate = (
+                self.tome_layerwise_merge_rate * self.num_transformer_blocks
+            )
+            assert total_merge_rate < 1
+
 
 class EncoderOutput(NamedTuple):
     hidden_states: torch.Tensor
@@ -308,15 +319,70 @@ class Encoder(nn.Module):
             all_layer_features[0] = x
 
         should_track_diffmoe_loss = config.block_config.mlp_mode == "diffmoe"
+        should_tome_merge = config.tome_layerwise_merge_rate is not None
         diffmoe_loss = 0.0
 
+        if should_tome_merge:
+            token_merger = None
+
         for i, block in enumerate(self.blocks):
-            x, *diffmoe_outputs = block(
+            x, keys, *diffmoe_outputs = block(
                 x,
                 key_pad_mask=key_pad_mask,
                 attn_mask=attn_mask,
                 rotary_embeds=rotary_embeds,
             )
+
+            if should_tome_merge:
+                pre_merge_sequence_length = x.shape[1]
+                post_merge_sequence_length = pre_merge_sequence_length * (
+                    1 - config.tome_layerwise_merge_rate
+                )
+
+                if config.tome_merge_to_nearest_mult_of is not None:
+                    # Try to keep the sequence length
+                    # a multiple of a nice number like 16
+                    post_merge_sequence_length = (
+                        int(
+                            post_merge_sequence_length
+                            // config.tome_merge_to_nearest_mult_of
+                        )
+                        * config.tome_merge_to_nearest_mult_of
+                    )
+                else:
+                    post_merge_sequence_length = int(round(post_merge_sequence_length))
+
+                assert post_merge_sequence_length > 0
+
+                num_to_merge = pre_merge_sequence_length - post_merge_sequence_length
+
+                keys = einx.mean("b [h] s d", keys)
+
+                if token_merger is None:
+                    token_merger = TokenMerger(
+                        keys,
+                        num_to_merge,
+                        sample_ids=sample_ids,
+                        mask_id=MASK_SAMPLE_ID,
+                    )
+                else:
+                    token_merger = token_merger.chain(keys, num_to_merge)
+
+                # merge position ids and compute new attention mask
+                position_ids = token_merger.merge(position_ids, mode="mean")
+                sample_ids = token_merger.merge(sample_ids, mode="drop")
+                attn_mask = get_attn_mask(
+                    sample_ids,
+                    num_heads=config.block_config.attention_config.num_attention_heads,
+                )
+                key_pad_mask = sample_ids == MASK_SAMPLE_ID
+
+                # possibly recompute position embeds
+                if rotary_embeds is not None:
+                    rotary_embeds = self.rope_pos_emb(position_ids)
+
+                # Merge the hidden states
+                x = token_merger.merge(x, mode="mean")
 
             if should_track_diffmoe_loss:
                 if len(diffmoe_outputs) == 0:
@@ -326,7 +392,11 @@ class Encoder(nn.Module):
                 diffmoe_loss = diffmoe_loss + layer_diffmoe_loss
 
             if return_all_layer_features:
-                all_layer_features[i + 1] = x
+                layer_features = x
+                if should_tome_merge:
+                    layer_features = token_merger.unmerge_all(layer_features)
+
+                all_layer_features[i + 1] = layer_features
 
         diffmoe_loss = diffmoe_loss / config.num_transformer_blocks
 
@@ -334,6 +404,10 @@ class Encoder(nn.Module):
             x = self.norm_out(x, sample_ids != MASK_SAMPLE_ID)
         else:
             x = self.norm_out(x)
+
+        if should_tome_merge:
+            # Unmerge normalized outputs
+            x = token_merger.unmerge_all(x)
 
         result = EncoderOutput(
             hidden_states=x,
@@ -481,7 +555,7 @@ class Predictor(nn.Module):
         diffmoe_loss = 0.0
 
         for block in self.blocks:
-            x, *diffmoe_outputs = block(
+            x, keys, *diffmoe_outputs = block(
                 x,
                 key_pad_mask=key_pad_mask,
                 attn_mask=attn_mask,
