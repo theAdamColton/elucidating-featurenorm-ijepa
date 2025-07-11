@@ -16,7 +16,7 @@ conf:
   steady_lr: 5e-4
   num_lr_steady_steps: 9999999999
 
-  batch_size: 320
+  batch_size: 256
   num_workers: 4
 
   num_register_tokens: 0
@@ -25,6 +25,7 @@ conf:
   model:
 
     encoder:
+      max_num_register_tokens: 0
       input_size: 768
       num_transformer_blocks: 12
       block_config:
@@ -33,14 +34,15 @@ conf:
           embed_dim: 384
           head_dim: 64
           num_attention_heads: 6
-          should_use_qk_norm: false
+          should_use_qk_norm: true
         norm_mode: dyntanh
         mlp_mode: diffmoe
-        diffmoe_num_experts: 8
+        diffmoe_num_experts: 16
       norm_out_mode: dyntanh
       norm_elementwise_affine: false
 
     predictor:
+      max_num_register_tokens: 0
       input_size: 384
       num_transformer_blocks: 6
       block_config:
@@ -49,26 +51,27 @@ conf:
           embed_dim: 256
           head_dim: 64
           num_attention_heads: 4
-          should_use_qk_norm: false
+          should_use_qk_norm: true
         norm_mode: dyntanh
         mlp_mode: diffmoe
-        diffmoe_num_experts: 8
+        diffmoe_num_experts: 16
       norm_out_mode: layernorm
 
-    predictor_batch_repeat: 1
+    predictor_batch_repeat: 4
     target_norm_mode: disabled
     should_predict_from_all_target: false
     should_attempt_mask_dropping: true
-    predictor_context_capacity: 1.0
-    predictor_target_capacity: 1.0
+    predictor_context_capacity: 0.25
+    predictor_target_capacity: 0.25
 
     sample_predictor_context_with_replacement: true
     sample_predictor_targets_with_replacement: true
 
   context_target_dataset:
-    min_context_capacity: 0.75
-    max_context_capacity: 0.9375
-    absolute_max_context_capacity: 0.9375
+    num_register_tokens: 0
+    min_context_capacity: 0.25
+    max_context_capacity: 0.5
+    absolute_max_context_capacity: 0.5
     mask_window_size: 2
     max_side_length: 256
     min_side_length: 64

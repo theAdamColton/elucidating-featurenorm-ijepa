@@ -353,6 +353,7 @@ class Encoder(nn.Module):
                     post_merge_sequence_length = int(round(post_merge_sequence_length))
 
                 assert post_merge_sequence_length > 0
+                assert post_merge_sequence_length < pre_merge_sequence_length
 
                 num_to_merge = pre_merge_sequence_length - post_merge_sequence_length
 

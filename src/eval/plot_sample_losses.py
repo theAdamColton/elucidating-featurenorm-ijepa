@@ -43,8 +43,8 @@ def plot_sample_losses(
     num_image_channels: int,
     autocast_fn,
     batch_size: int = 32,
-    num_unique_samples: int = 10,
-    num_repeat_samples: int = 8000,
+    num_unique_samples: int = 20,
+    num_repeat_samples: int = 1000,
     seed: int | None = None,
 ):
     """

@@ -391,6 +391,7 @@ class Trainer:
         return log_dict
 
     def train_one_step(self, dataloader_stream, prog_bar):
+        conf = self.conf
         should_log_lidar = (
             self.training_state.global_step % self.conf.log_lidar_every_num_steps == 0
         )
