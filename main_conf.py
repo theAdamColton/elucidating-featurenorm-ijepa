@@ -102,6 +102,7 @@ class MainConfig:
         "validate",
         "visualize-embeddings",
         "plot-sample-losses",
+        "plot-mean-loss",
         "validate-monocular-depth",
     ] = "train"
 

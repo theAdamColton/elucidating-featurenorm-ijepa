@@ -7,6 +7,7 @@ import torch
 
 from main_conf import MainConfig
 from src.dataset import get_context_target_dataloader
+from src.eval.plot_mean_loss import plot_mean_loss
 from src.model import IJEPAModel
 from src.validate import validate
 from src.validate_monocular_depth import validate_monocular_depth_prediction
@@ -141,6 +142,21 @@ def main(conf: MainConfig = MainConfig()):
 
     elif conf.mode == "plot-sample-losses":
         plot_sample_losses(
+            context_target_dataset=conf.context_target_dataset,
+            dataset_pattern=conf.train_dataset_pattern,
+            image_column_name=conf.image_column_name,
+            model=model,
+            device=conf.torch_device,
+            dtype=conf.torch_dtype,
+            patch_size=patch_size,
+            num_image_channels=num_image_channels,
+            autocast_fn=autocast_fn,
+            seed=conf.seed,
+            batch_size=conf.batch_size,
+        )
+
+    elif conf.mode == "plot-mean-loss":
+        plot_mean_loss(
             context_target_dataset=conf.context_target_dataset,
             dataset_pattern=conf.train_dataset_pattern,
             image_column_name=conf.image_column_name,
