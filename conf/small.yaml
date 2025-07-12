@@ -5,7 +5,7 @@ conf:
   dtype: bfloat16
   device: cuda
 
-  num_epochs: 400
+  num_epochs: 600
 
   ema_beta_start: 0.95
   ema_beta_warmup_steps: 1000
@@ -16,7 +16,7 @@ conf:
   steady_lr: 5e-4
   num_lr_steady_steps: 9999999999
 
-  batch_size: 256
+  batch_size: 320
   num_workers: 4
 
   num_register_tokens: 0
@@ -36,7 +36,7 @@ conf:
           num_attention_heads: 6
           should_use_qk_norm: true
         norm_mode: dyntanh
-        mlp_mode: diffmoe
+        mlp_mode: vanilla
         diffmoe_num_experts: 16
       norm_out_mode: dyntanh
       norm_elementwise_affine: false
@@ -53,7 +53,7 @@ conf:
           num_attention_heads: 4
           should_use_qk_norm: true
         norm_mode: dyntanh
-        mlp_mode: diffmoe
+        mlp_mode: vanilla
         diffmoe_num_experts: 16
       norm_out_mode: layernorm
 

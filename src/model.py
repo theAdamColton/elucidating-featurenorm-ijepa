@@ -186,7 +186,7 @@ class EncoderConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
-    max_num_register_tokens: int = 8
+    max_num_register_tokens: int | None = 8
     norm_out_mode: Literal["disabled", "layernorm", "batchnorm", "dyntanh"] = (
         "layernorm"
     )
@@ -201,6 +201,11 @@ class EncoderConfig:
                 self.tome_layerwise_merge_rate * self.num_transformer_blocks
             )
             assert total_merge_rate < 1
+
+        self.use_registers = (
+            self.max_num_register_tokens is not None
+            and self.max_num_register_tokens > 0
+        )
 
 
 class EncoderOutput(NamedTuple):
@@ -219,10 +224,11 @@ class Encoder(nn.Module):
 
         self.proj_in = nn.Linear(config.input_size, self.hidden_size)
 
-        self.reg_emb = nn.Parameter(
-            torch.empty(config.max_num_register_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.reg_emb, std=0.02)
+        if config.use_registers:
+            self.reg_emb = nn.Parameter(
+                torch.empty(config.max_num_register_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.reg_emb, std=0.02)
 
         if config.use_abs_pos_emb:
             self.h_emb = nn.Parameter(
@@ -282,11 +288,12 @@ class Encoder(nn.Module):
             token_ids[..., 2:],
         )
 
-        is_register = register_ids != MASK_SAMPLE_ID
-        register_ids = register_ids.masked_fill(~is_register, 0)
-        reg_emb = self.reg_emb[register_ids]
-        reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
-        x = x + reg_emb
+        if config.use_registers:
+            is_register = register_ids != MASK_SAMPLE_ID
+            register_ids = register_ids.masked_fill(~is_register, 0)
+            reg_emb = self.reg_emb[register_ids]
+            reg_emb = einx.multiply("b s d, b s", reg_emb, is_register)
+            x = x + reg_emb
 
         if config.use_rope2d:
             rotary_embeds = self.rope_pos_emb(position_ids)
@@ -461,11 +468,17 @@ class PredictorConfig:
 
     max_num_height_tokens: int = 64
     max_num_width_tokens: int = 64
-    max_num_register_tokens: int = 8
+    max_num_register_tokens: int | None = None
 
     should_zero_ctx_register_tokens: bool = True
 
     norm_out_mode: Literal["layernorm", "dyntanh"] = "layernorm"
+
+    def __post_init__(self):
+        self.use_registers = (
+            self.max_num_register_tokens is not None
+            and self.max_num_register_tokens > 0
+        )
 
 
 class Predictor(nn.Module):
@@ -485,10 +498,11 @@ class Predictor(nn.Module):
         else:
             self.proj_in = nn.Linear(config.input_size, self.hidden_size)
 
-        self.reg_emb = nn.Parameter(
-            torch.empty(config.max_num_register_tokens, self.hidden_size)
-        )
-        init.trunc_normal_(self.reg_emb, std=0.02)
+        if config.use_registers:
+            self.reg_emb = nn.Parameter(
+                torch.empty(config.max_num_register_tokens, self.hidden_size)
+            )
+            init.trunc_normal_(self.reg_emb, std=0.02)
 
         if config.use_abs_pos_emb:
             self.h_emb = nn.Parameter(
@@ -547,16 +561,17 @@ class Predictor(nn.Module):
         # zero out tokens to predict
         x = einx.multiply("b s d, b s", x, ~prediction_mask)
 
-        is_register = register_ids != MASK_SAMPLE_ID
-        register_ids = register_ids.masked_fill(~is_register, 0)
-        reg_emb = self.reg_emb[register_ids]
-        reg_emb = reg_emb * is_register.unsqueeze(-1)
+        if config.use_registers:
+            is_register = register_ids != MASK_SAMPLE_ID
+            register_ids = register_ids.masked_fill(~is_register, 0)
+            reg_emb = self.reg_emb[register_ids]
+            reg_emb = reg_emb * is_register.unsqueeze(-1)
 
-        if config.should_zero_ctx_register_tokens:
-            # zero out context register tokens
-            x = x * ~is_register.unsqueeze(-1)
+            if config.should_zero_ctx_register_tokens:
+                # zero out context register tokens
+                x = x * ~is_register.unsqueeze(-1)
 
-        x = x + reg_emb
+            x = x + reg_emb
 
         if config.use_abs_pos_emb:
             pos_emb = (
