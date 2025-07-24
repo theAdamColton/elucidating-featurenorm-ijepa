@@ -1,5 +1,6 @@
 # Elucidating the Role of Feature Normalization in IJEPA
 
+[Paper](Elucidating_the_Role_of_Feature_Normalization_in_IJEPA.pdf)
 
 # How to run our code and reproduce our results
 
