@@ -2,7 +2,14 @@
 
 [\[Paper\]](Elucidating_the_Role_of_Feature_Normalization_in_IJEPA.pdf)
 
+<img src="https://github.com/user-attachments/assets/a0c713bb-2982-4863-a24a-81347181f801" width="450" />
+<img src="https://github.com/user-attachments/assets/060b492d-1818-4473-8555-c6d54ec9c4c9" width="300" />
+<img src="https://github.com/user-attachments/assets/87add32f-c54c-4f5a-a6bd-c3ce7b5184f8" width="300" />
+<img src="https://github.com/user-attachments/assets/904fb2b9-17bf-4781-a22b-5265fb0cd42b" width="400" />
+
+
 # How to run our code and reproduce our results
+
 
 We use `uv` for dependency management.
 
