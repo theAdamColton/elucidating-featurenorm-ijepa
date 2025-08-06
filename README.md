@@ -1,6 +1,6 @@
 # Elucidating the Role of Feature Normalization in IJEPA
 
-[\[Paper\]](Elucidating_the_Role_of_Feature_Normalization_in_IJEPA.pdf)
+[\[arxiv\]](https://arxiv.org/abs/2508.02829)
 
 <img src="https://github.com/user-attachments/assets/a0c713bb-2982-4863-a24a-81347181f801" width="450" />
 <img src="https://github.com/user-attachments/assets/060b492d-1818-4473-8555-c6d54ec9c4c9" width="300" />
